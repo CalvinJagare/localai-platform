@@ -4,3 +4,9 @@ httpx==0.27.2
 python-multipart==0.0.12
 psutil==6.0.0
 aiofiles==24.1.0
+# Training dependencies
+unsloth
+torch
+trl
+transformers
+datasets

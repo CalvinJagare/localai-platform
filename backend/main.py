@@ -1,18 +1,21 @@
 import uuid
-import os
 import json
+import threading
 from pathlib import Path
 
 import httpx
 import psutil
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 OLLAMA_BASE = "http://localhost:11434"
 TRAINING_DIR = Path(__file__).parent / "data" / "training"
+MODELS_DIR = Path(__file__).parent / "data" / "models"
+JOBS_FILE = Path(__file__).parent / "data" / "jobs.json"
 TRAINING_DIR.mkdir(parents=True, exist_ok=True)
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="LocalAI Platform")
 
@@ -23,11 +26,161 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Job store — backed by /data/jobs.json so state survives --reload restarts
+# ---------------------------------------------------------------------------
+
+_jobs_lock = threading.Lock()
+
+
+def _load_jobs() -> dict[str, dict]:
+    try:
+        return json.loads(JOBS_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_jobs() -> None:
+    """Atomically write jobs dict to disk. Must be called under _jobs_lock."""
+    tmp = JOBS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(jobs, indent=2))
+    tmp.replace(JOBS_FILE)
+
+
+def _update_job(job_id: str, **kwargs) -> None:
+    """Thread-safe update of a job's fields and persist to disk."""
+    with _jobs_lock:
+        jobs[job_id].update(kwargs)
+        _save_jobs()
+
+
+# Initialise from disk so a --reload doesn't lose running jobs
+jobs: dict[str, dict] = _load_jobs()
+
 
 class ChatRequest(BaseModel):
     message: str
     model: str
 
+
+# ---------------------------------------------------------------------------
+# Training helper
+# ---------------------------------------------------------------------------
+
+def _format_record(record: dict, tokenizer) -> str:
+    """Convert a .jsonl record to a training string."""
+    if "messages" in record:
+        return tokenizer.apply_chat_template(record["messages"], tokenize=False)
+    if "instruction" in record:
+        text = f"### Instruction:\n{record['instruction']}\n"
+        if record.get("input"):
+            text += f"### Input:\n{record['input']}\n"
+        text += f"### Response:\n{record['output']}"
+        return text
+    return record.get("text", json.dumps(record))
+
+
+def run_training(job_id: str, data_path: Path) -> None:
+    """
+    Blocking function executed in FastAPI's threadpool via BackgroundTasks.
+    Loads Phi-3-mini with Unsloth, fine-tunes with QLoRA, saves the adapter.
+    """
+    _update_job(job_id, status="training")
+    output_dir = MODELS_DIR / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # unsloth must be imported before transformers / trl / peft
+        from unsloth import FastLanguageModel
+        import torch
+        from datasets import Dataset
+        from transformers import TrainingArguments, TrainerCallback
+        from trl import SFTTrainer
+
+        # -- Load base model with 4-bit quantisation --------------------------
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name="unsloth/Phi-3-mini-4k-instruct",
+            max_seq_length=2048,
+            load_in_4bit=True,
+        )
+
+        # -- Attach LoRA adapters ---------------------------------------------
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=16,
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+            lora_alpha=16,
+            lora_dropout=0,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+        )
+
+        # -- Build dataset ----------------------------------------------------
+        records = []
+        with open(data_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+
+        if not records:
+            raise ValueError("Training file is empty.")
+
+        dataset = Dataset.from_list(
+            [{"text": _format_record(r, tokenizer)} for r in records]
+        )
+
+        # -- Progress callback — persist to disk every 5 % to limit I/O ------
+        last_pct: list[int] = [-1]
+
+        class ProgressCallback(TrainerCallback):
+            def on_step_end(self, args, state, control, **kwargs):
+                if state.max_steps > 0:
+                    pct = min(int(state.global_step / state.max_steps * 100), 99)
+                    if pct >= last_pct[0] + 5:
+                        _update_job(job_id, progress=pct)
+                        last_pct[0] = pct
+
+        # -- Train ------------------------------------------------------------
+        trainer = SFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=dataset,
+            dataset_text_field="text",
+            max_seq_length=2048,
+            args=TrainingArguments(
+                per_device_train_batch_size=2,
+                gradient_accumulation_steps=4,
+                num_train_epochs=1,
+                learning_rate=2e-4,
+                fp16=not torch.cuda.is_bf16_supported(),
+                bf16=torch.cuda.is_bf16_supported(),
+                logging_steps=1,
+                output_dir=str(output_dir / "checkpoints"),
+                optim="adamw_8bit",
+                seed=42,
+            ),
+            callbacks=[ProgressCallback()],
+        )
+
+        trainer.train()
+
+        # -- Save adapter to /data/models/{job_id}/ ---------------------------
+        model.save_pretrained(str(output_dir))
+        tokenizer.save_pretrained(str(output_dir))
+
+        _update_job(job_id, status="complete", progress=100, error=None)
+
+    except Exception as exc:
+        _update_job(job_id, status="failed", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
@@ -61,8 +214,8 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/train")
-async def train(file: UploadFile = File(...)):
-    """Save an uploaded .jsonl training file and return a job_id."""
+async def train(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Save the uploaded .jsonl file then kick off a background training job."""
     if not file.filename or not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only .jsonl files are accepted.")
 
@@ -72,7 +225,31 @@ async def train(file: UploadFile = File(...)):
     contents = await file.read()
     dest.write_bytes(contents)
 
-    return {"job_id": job_id, "filename": file.filename, "size_bytes": len(contents), "status": "uploaded"}
+    with _jobs_lock:
+        jobs[job_id] = {"status": "queued", "progress": 0, "error": None}
+        _save_jobs()
+    background_tasks.add_task(run_training, job_id, dest)
+
+    return {
+        "job_id": job_id,
+        "filename": file.filename,
+        "size_bytes": len(contents),
+        "status": "queued",
+    }
+
+
+@app.get("/train/{job_id}/status")
+async def train_status(job_id: str):
+    """Return the current status and progress (0-100) of a training job."""
+    with _jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        job = dict(jobs[job_id])  # snapshot under lock
+    return {
+        "status": job["status"],
+        "progress": job["progress"],
+        "error": job.get("error"),
+    }
 
 
 @app.get("/models")
@@ -105,7 +282,6 @@ async def health():
     mem = psutil.virtual_memory()
     cpu_percent = psutil.cpu_percent(interval=0.2)
 
-    # GPU info via nvidia-smi if available
     gpu_info = None
     try:
         import subprocess
