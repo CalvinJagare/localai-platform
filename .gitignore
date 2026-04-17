@@ -1,0 +1,5 @@
+backend/data/models/
+backend/data/training/
+backend/unsloth_compiled_cache/
+__pycache__/
+*.pyc
