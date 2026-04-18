@@ -22,6 +22,17 @@ interface StatusResult {
   status: JobStatus
   progress: number
   error: string | null
+  ollama_model?: string
+}
+
+interface JobRecord {
+  job_id: string
+  filename?: string
+  status: JobStatus
+  progress: number
+  error: string | null
+  created_at?: string
+  ollama_model?: string
 }
 
 // Statuses where nothing is changing server-side — no need to poll
@@ -33,8 +44,20 @@ export default function TrainingPage() {
   const [job, setJob] = useState<UploadResult | null>(null)
   const [jobStatus, setJobStatus] = useState<StatusResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [jobHistory, setJobHistory] = useState<JobRecord[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  async function fetchHistory() {
+    try {
+      const resp = await fetch(`${API}/jobs`)
+      if (!resp.ok) return
+      setJobHistory(await resp.json())
+    } catch {}
+  }
+
+  // Load job history on mount
+  useEffect(() => { fetchHistory() }, [])
 
   // Restart / stop polling whenever the status changes.
   // 'complete' stops polling but triggerMerge() transitions to 'merging',
@@ -79,6 +102,7 @@ export default function TrainingPage() {
       const result: UploadResult = await resp.json()
       setJob(result)
       setJobStatus({ status: result.status, progress: 0, error: null })
+      fetchHistory()
     } catch (err) {
       setError(String(err))
     } finally {
@@ -96,6 +120,7 @@ export default function TrainingPage() {
       }
       // Optimistic update — transitions status to 'merging' which restarts polling
       setJobStatus(prev => prev ? { ...prev, status: 'merging', error: null } : null)
+      fetchHistory()
     } catch (err) {
       setError(`Could not start merge: ${String(err)}`)
     }
@@ -219,8 +244,8 @@ export default function TrainingPage() {
           {/* Merged — success */}
           {jobStatus.status === 'merged' && (
             <div className="p-3 bg-green-950 border border-green-700 rounded-xl text-green-300 text-sm">
-              🎉 Nexus is ready — open Chat and select{' '}
-              <span className="font-mono font-semibold">nexus</span> from the dropdown.
+              🎉 Ready — open Chat and select{' '}
+              <span className="font-mono font-semibold">{jobStatus.ollama_model ?? 'nexus'}</span> from the dropdown.
             </div>
           )}
 
@@ -253,6 +278,31 @@ export default function TrainingPage() {
             <Row label="File" value={job.filename} />
             <Row label="Size" value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />
             <Row label="Base model" value="unsloth/Phi-3-mini-4k-instruct" />
+          </div>
+        </div>
+      )}
+
+      {/* Job history */}
+      {jobHistory.length > 0 && (
+        <div className="mt-8">
+          <h3 className="text-sm font-semibold text-gray-400 mb-3">Job History</h3>
+          <div className="space-y-2">
+            {jobHistory.map(j => (
+              <div
+                key={j.job_id}
+                className="flex items-center gap-3 p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm"
+              >
+                <StatusDot status={j.status} />
+                <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
+                <span className="flex-1 text-gray-300 truncate">{j.filename ?? 'unknown'}</span>
+                <span className="text-xs text-gray-500 capitalize">{j.status.replace('_', ' ')}</span>
+                {j.created_at && (
+                  <span className="text-xs text-gray-600 shrink-0">
+                    {new Date(j.created_at).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

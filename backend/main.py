@@ -1,6 +1,9 @@
+import os
 import uuid
 import json
+import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -10,7 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HF_HOME"] = "/mnt/d/hf-cache"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 OLLAMA_BASE = "http://localhost:11434"
+LLAMA_CPP_CONVERT = Path("/mnt/d/llama.cpp/convert_hf_to_gguf.py")
+PYTHON = "/usr/bin/python3"
 TRAINING_DIR = Path(__file__).parent / "data" / "training"
 MODELS_DIR = Path(__file__).parent / "data" / "models"
 JOBS_FILE = Path(__file__).parent / "data" / "jobs.json"
@@ -181,53 +190,100 @@ def run_training(job_id: str, data_path: Path) -> None:
 def run_merge(job_id: str) -> None:
     """
     Blocking function executed in FastAPI's threadpool via BackgroundTasks.
-    Reloads the trained adapter, merges it into the base model, exports to
-    GGUF (q4_k_m) and registers the result in Ollama as 'nexus'.
+    Merges the LoRA adapter into the base model, converts to GGUF via
+    llama.cpp, then registers the result in Ollama via CLI.
     """
-    output_dir = MODELS_DIR / job_id
-    gguf_dir = output_dir / "gguf"
-    gguf_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+
+    adapter_dir = MODELS_DIR / job_id
+    merged_hf_dir = adapter_dir / "merged_hf"
+    gguf_dir = adapter_dir / "gguf"
+    gguf_path = gguf_dir / "model-f16.gguf"
+    modelfile_path = gguf_dir / "Modelfile"
+    model_name = f"nexus-{job_id[:8]}"
+
+    print(f"[merge] adapter_dir:   {adapter_dir}")
+    print(f"[merge] merged_hf_dir: {merged_hf_dir}")
+    print(f"[merge] gguf_dir:      {gguf_dir}")
+    print(f"[merge] gguf_path:     {gguf_path}")
+
+    assert adapter_dir is not None, "adapter_dir is None"
+    assert merged_hf_dir is not None, "merged_hf_dir is None"
+    assert gguf_dir is not None, "gguf_dir is None"
+    assert gguf_path is not None, "gguf_path is None"
+
+    if not adapter_dir.exists():
+        _update_job(job_id, status="merge_failed",
+                    error=f"Adapter directory not found: {adapter_dir}")
+        return
 
     try:
-        # unsloth must be imported before transformers / trl / peft
-        from unsloth import FastLanguageModel
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["HF_HOME"] = "/mnt/d/hf-cache"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-        # Reload adapter — Unsloth detects adapter_config.json automatically
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=str(output_dir),
-            max_seq_length=2048,
-            load_in_4bit=True,
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        # Resolve the base model to its absolute snapshot path on disk so we
+        # never pass a repo-ID string through transformers' cache lookup
+        # (which can hit a NoneType.endswith error on certain cached metadata).
+        snapshots_dir = (
+            Path(os.environ["HF_HOME"])
+            / "hub"
+            / "models--unsloth--Phi-3-mini-4k-instruct"
+            / "snapshots"
         )
+        if not snapshots_dir.exists():
+            raise RuntimeError(f"Base model cache not found at {snapshots_dir}")
+        snapshots = sorted(snapshots_dir.iterdir())
+        if not snapshots:
+            raise RuntimeError(f"No snapshots in {snapshots_dir}")
+        base_model_path = str(snapshots[-1])
+        print(f"[merge] base_model_path: {base_model_path}")
 
-        # Export merged GGUF; Unsloth merges LoRA weights internally before converting
-        model.save_pretrained_gguf(
-            str(gguf_dir),
-            tokenizer,
-            quantization_method="q4_k_m",
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(adapter_dir),
+            local_files_only=True,
         )
+        # Load base model in full precision on CPU to avoid bitsandbytes quant issues
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            torch_dtype="auto",
+            device_map="cpu",
+            local_files_only=True,
+        )
+        model = PeftModel.from_pretrained(model, str(adapter_dir))
+        model = model.merge_and_unload()
 
-        gguf_files = list(gguf_dir.glob("*.gguf"))
-        if not gguf_files:
-            raise RuntimeError("GGUF export produced no .gguf file.")
+        if merged_hf_dir.exists():
+            shutil.rmtree(merged_hf_dir)
+        merged_hf_dir.mkdir(parents=True)
+        model.save_pretrained(str(merged_hf_dir))
+        tokenizer.save_pretrained(str(merged_hf_dir))
+        del model
 
-        gguf_path = str(gguf_files[0].resolve())
+        # Convert merged HF model to GGUF via llama.cpp
+        gguf_dir.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [PYTHON, str(LLAMA_CPP_CONVERT), str(merged_hf_dir),
+             "--outtype", "f16",
+             "--outfile", str(gguf_path)],
+            capture_output=True, text=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"GGUF conversion failed:\n{result.stderr or result.stdout}")
 
-        # Register in Ollama — stream=False returns a single final response
-        with httpx.Client(timeout=600) as client:
-            resp = client.post(
-                f"{OLLAMA_BASE}/api/create",
-                json={
-                    "name": "nexus",
-                    "modelfile": f"FROM {gguf_path}",
-                    "stream": False,
-                },
-            )
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"Ollama /api/create returned {resp.status_code}: {resp.text}"
-                )
+        # Register model in Ollama via CLI
+        modelfile_path.write_text(f"FROM {gguf_path}\n")
+        result = subprocess.run(
+            ["/usr/local/bin/ollama", "create", model_name, "-f", str(modelfile_path)],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Ollama registration failed:\n{result.stderr or result.stdout}")
 
-        _update_job(job_id, status="merged", error=None)
+        _update_job(job_id, status="merged", ollama_model=model_name, error=None)
 
     except Exception as exc:
         _update_job(job_id, status="merge_failed", error=str(exc))
@@ -281,7 +337,13 @@ async def train(background_tasks: BackgroundTasks, file: UploadFile = File(...))
     dest.write_bytes(contents)
 
     with _jobs_lock:
-        jobs[job_id] = {"status": "queued", "progress": 0, "error": None}
+        jobs[job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "error": None,
+            "filename": file.filename,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
         _save_jobs()
     background_tasks.add_task(run_training, job_id, dest)
 
@@ -304,7 +366,18 @@ async def train_status(job_id: str):
         "status": job["status"],
         "progress": job["progress"],
         "error": job.get("error"),
+        "ollama_model": job.get("ollama_model"),
     }
+
+
+@app.get("/jobs")
+async def list_jobs():
+    """Return all jobs sorted by most recent first."""
+    with _jobs_lock:
+        snapshot = dict(jobs)
+    result = [{"job_id": k, **v} for k, v in snapshot.items()]
+    result.sort(key=lambda j: j.get("created_at", ""), reverse=True)
+    return result
 
 
 @app.post("/train/{job_id}/merge")
@@ -359,7 +432,6 @@ async def health():
 
     gpu_info = None
     try:
-        import subprocess
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],

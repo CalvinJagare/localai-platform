@@ -13,5 +13,34 @@
     "status": "merge_failed",
     "progress": 100,
     "error": "Unsloth: GGUF conversion failed: [FAIL] Unsloth: You do not have internet connection!"
+  },
+  "60b17d3d-730a-4259-a662-6a2381502823": {
+    "status": "merge_failed",
+    "progress": 100,
+    "error": "GGUF conversion failed:\nusage: convert_hf_to_gguf.py [-h] [--vocab-only] [--outfile OUTFILE]\n                             [--outtype {f32,f16,bf16,q8_0,tq1_0,tq2_0,auto}]\n                             [--bigendian] [--use-temp-file] [--no-lazy]\n                             [--model-name MODEL_NAME] [--verbose]\n                             [--split-max-tensors SPLIT_MAX_TENSORS]\n                             [--split-max-size SPLIT_MAX_SIZE] [--dry-run]\n                             [--no-tensor-first-split] [--metadata METADATA]\n                             [--print-supported-models] [--remote] [--mmproj]\n                             [--mistral-format]\n                             [--disable-mistral-community-chat-template]\n                             [--sentence-transformers-dense-modules]\n                             [--fuse-gate-up-exps]\n                             [model]\nconvert_hf_to_gguf.py: error: argument --outtype: invalid choice: 'q4_k_m' (choose from 'f32', 'f16', 'bf16', 'q8_0', 'tq1_0', 'tq2_0', 'auto')\n",
+    "filename": "nexus_training_v2.jsonl",
+    "created_at": "2026-04-18T17:15:06.369340+00:00"
+  },
+  "b3e681a1-3133-4ba6-9c82-b5908dc36757": {
+    "status": "merge_failed",
+    "progress": 100,
+    "error": "GGUF conversion failed:\nINFO:hf-to-gguf:Loading model: merged_hf\nINFO:hf-to-gguf:Model architecture: MistralForCausalLM\nINFO:hf-to-gguf:gguf: indexing model part 'model.safetensors'\nINFO:gguf.gguf_writer:gguf: This GGUF file is for Little Endian only\nINFO:hf-to-gguf:Exporting model...\nTraceback (most recent call last):\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 13477, in <module>\n    main()\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 13471, in main\n    model_instance.write()\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 934, in write\n    self.prepare_tensors()\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 2983, in prepare_tensors\n    super().prepare_tensors()\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 768, in prepare_tensors\n    self.dequant_model()\n  File \"/mnt/d/llama.cpp/convert_hf_to_gguf.py\", line 500, in dequant_model\n    raise NotImplementedError(f\"Quant method is not yet supported: {quant_method!r}\")\nNotImplementedError: Quant method is not yet supported: 'bitsandbytes'\n",
+    "filename": "nexus_training_v2.jsonl",
+    "created_at": "2026-04-18T17:46:11.780719+00:00"
+  },
+  "dca3ea82-7261-4f73-9f2b-bdbdf7ab1d5b": {
+    "status": "merge_failed",
+    "progress": 100,
+    "error": "Error no file named pytorch_model.bin, model.safetensors, tf_model.h5, model.ckpt.index or flax_model.msgpack found in directory /mnt/d/hf-cache/hub/models--unsloth--Phi-3-mini-4k-instruct/snapshots/636c707430a5509c80b1aa51d05c127ed339a975.",
+    "filename": "nexus_training_v2.jsonl",
+    "created_at": "2026-04-18T18:30:28.798788+00:00"
+  },
+  "b5c1a74d-9640-4675-86fa-ef702de867e4": {
+    "status": "merged",
+    "progress": 100,
+    "error": null,
+    "filename": "nexus_training_v2.jsonl",
+    "created_at": "2026-04-18T22:20:29.527474+00:00",
+    "ollama_model": "nexus-b5c1a74d"
   }
 }
