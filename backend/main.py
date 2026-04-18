@@ -154,7 +154,7 @@ def run_training(job_id: str, data_path: Path) -> None:
             args=TrainingArguments(
                 per_device_train_batch_size=2,
                 gradient_accumulation_steps=4,
-                num_train_epochs=1,
+                num_train_epochs=3,
                 learning_rate=2e-4,
                 fp16=not torch.cuda.is_bf16_supported(),
                 bf16=torch.cuda.is_bf16_supported(),
@@ -176,6 +176,61 @@ def run_training(job_id: str, data_path: Path) -> None:
 
     except Exception as exc:
         _update_job(job_id, status="failed", error=str(exc))
+
+
+def run_merge(job_id: str) -> None:
+    """
+    Blocking function executed in FastAPI's threadpool via BackgroundTasks.
+    Reloads the trained adapter, merges it into the base model, exports to
+    GGUF (q4_k_m) and registers the result in Ollama as 'nexus'.
+    """
+    output_dir = MODELS_DIR / job_id
+    gguf_dir = output_dir / "gguf"
+    gguf_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # unsloth must be imported before transformers / trl / peft
+        from unsloth import FastLanguageModel
+
+        # Reload adapter — Unsloth detects adapter_config.json automatically
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=str(output_dir),
+            max_seq_length=2048,
+            load_in_4bit=True,
+        )
+
+        # Export merged GGUF; Unsloth merges LoRA weights internally before converting
+        model.save_pretrained_gguf(
+            str(gguf_dir),
+            tokenizer,
+            quantization_method="q4_k_m",
+        )
+
+        gguf_files = list(gguf_dir.glob("*.gguf"))
+        if not gguf_files:
+            raise RuntimeError("GGUF export produced no .gguf file.")
+
+        gguf_path = str(gguf_files[0].resolve())
+
+        # Register in Ollama — stream=False returns a single final response
+        with httpx.Client(timeout=600) as client:
+            resp = client.post(
+                f"{OLLAMA_BASE}/api/create",
+                json={
+                    "name": "nexus",
+                    "modelfile": f"FROM {gguf_path}",
+                    "stream": False,
+                },
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"Ollama /api/create returned {resp.status_code}: {resp.text}"
+                )
+
+        _update_job(job_id, status="merged", error=None)
+
+    except Exception as exc:
+        _update_job(job_id, status="merge_failed", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +305,26 @@ async def train_status(job_id: str):
         "progress": job["progress"],
         "error": job.get("error"),
     }
+
+
+@app.post("/train/{job_id}/merge")
+async def merge(job_id: str, background_tasks: BackgroundTasks):
+    """Merge the trained LoRA adapter, export to GGUF, and register in Ollama as 'nexus'."""
+    with _jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        current_status = jobs[job_id]["status"]
+
+    if current_status not in ("complete", "merge_failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be 'complete' or 'merge_failed' to merge (current: {current_status}).",
+        )
+
+    _update_job(job_id, status="merging", error=None)
+    background_tasks.add_task(run_merge, job_id)
+
+    return {"status": "merging"}
 
 
 @app.get("/models")

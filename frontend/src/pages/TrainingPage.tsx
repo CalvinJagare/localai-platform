@@ -2,7 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 
 const API = 'http://localhost:8000'
 
-type JobStatus = 'queued' | 'training' | 'complete' | 'failed'
+type JobStatus =
+  | 'queued'
+  | 'training'
+  | 'complete'
+  | 'failed'
+  | 'merging'
+  | 'merged'
+  | 'merge_failed'
 
 interface UploadResult {
   job_id: string
@@ -17,6 +24,9 @@ interface StatusResult {
   error: string | null
 }
 
+// Statuses where nothing is changing server-side — no need to poll
+const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed']
+
 export default function TrainingPage() {
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -26,10 +36,12 @@ export default function TrainingPage() {
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Start polling when a job is queued/training; stop when terminal state reached
+  // Restart / stop polling whenever the status changes.
+  // 'complete' stops polling but triggerMerge() transitions to 'merging',
+  // which causes this effect to re-run and restart polling automatically.
   useEffect(() => {
     if (!job) return
-    if (jobStatus?.status === 'complete' || jobStatus?.status === 'failed') return
+    if (TERMINAL.includes(jobStatus?.status ?? ('' as JobStatus))) return
 
     pollRef.current = setInterval(async () => {
       try {
@@ -37,9 +49,7 @@ export default function TrainingPage() {
         if (!resp.ok) return
         const data: StatusResult = await resp.json()
         setJobStatus(data)
-        if (data.status === 'complete' || data.status === 'failed') {
-          clearInterval(pollRef.current!)
-        }
+        if (TERMINAL.includes(data.status)) clearInterval(pollRef.current!)
       } catch {
         // network hiccup — keep polling
       }
@@ -76,6 +86,21 @@ export default function TrainingPage() {
     }
   }
 
+  async function triggerMerge() {
+    if (!job) return
+    try {
+      const resp = await fetch(`${API}/train/${job.job_id}/merge`, { method: 'POST' })
+      if (!resp.ok) {
+        const data = await resp.json()
+        throw new Error(data.detail ?? resp.statusText)
+      }
+      // Optimistic update — transitions status to 'merging' which restarts polling
+      setJobStatus(prev => prev ? { ...prev, status: 'merging', error: null } : null)
+    } catch (err) {
+      setError(`Could not start merge: ${String(err)}`)
+    }
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragging(false)
@@ -88,7 +113,8 @@ export default function TrainingPage() {
     if (file) uploadFile(file)
   }
 
-  const isActive = jobStatus && (jobStatus.status === 'queued' || jobStatus.status === 'training')
+  const isActive =
+    jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
@@ -99,26 +125,32 @@ export default function TrainingPage() {
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
 
-      {/* Drop zone — disabled while a job is running */}
+      {/* Drop zone — disabled while training or merging */}
       <div
         onDragOver={(e) => { e.preventDefault(); if (!isActive) setDragging(true) }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => { if (!isActive) onDrop(e) }}
         onClick={() => { if (!isActive) inputRef.current?.click() }}
         className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors
-          ${isActive ? 'border-gray-700 bg-gray-900 opacity-50 cursor-not-allowed' :
-            dragging ? 'border-indigo-500 bg-indigo-950 cursor-pointer' :
-            'border-gray-700 hover:border-gray-500 bg-gray-900 cursor-pointer'}`}
+          ${isActive
+            ? 'border-gray-700 bg-gray-900 opacity-50 cursor-not-allowed'
+            : dragging
+              ? 'border-indigo-500 bg-indigo-950 cursor-pointer'
+              : 'border-gray-700 hover:border-gray-500 bg-gray-900 cursor-pointer'}`}
       >
         <input ref={inputRef} type="file" accept=".jsonl" onChange={onFileChange} className="hidden" />
         <div className="text-4xl mb-3">📂</div>
         <p className="text-sm text-gray-300 font-medium">
-          {uploading ? 'Uploading…' : isActive ? 'Training in progress…' : 'Drop a .jsonl file here or click to browse'}
+          {uploading
+            ? 'Uploading…'
+            : isActive
+              ? `${jobStatus?.status === 'merging' ? 'Merging in progress…' : 'Training in progress…'}`
+              : 'Drop a .jsonl file here or click to browse'}
         </p>
         <p className="text-xs text-gray-500 mt-1">Accepted format: .jsonl</p>
       </div>
 
-      {/* Error */}
+      {/* Upload / merge-start errors */}
       {error && (
         <div className="mt-4 p-4 bg-red-950 border border-red-700 rounded-xl text-sm text-red-300">
           {error}
@@ -128,16 +160,18 @@ export default function TrainingPage() {
       {/* Job card */}
       {job && jobStatus && (
         <div className="mt-5 p-5 bg-gray-900 border border-gray-800 rounded-2xl space-y-4 text-sm">
-          {/* Header row */}
+          {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium">
               <StatusDot status={jobStatus.status} />
-              <span className="capitalize text-gray-200">{jobStatus.status}</span>
+              <span className="capitalize text-gray-200">
+                {jobStatus.status.replace('_', ' ')}
+              </span>
             </div>
             <span className="text-xs text-gray-500 font-mono">{job.job_id.slice(0, 8)}…</span>
           </div>
 
-          {/* Progress bar — shown while queued or training */}
+          {/* Training progress bar */}
           {(jobStatus.status === 'queued' || jobStatus.status === 'training') && (
             <div>
               <div className="flex justify-between text-xs text-gray-400 mb-1.5">
@@ -153,18 +187,64 @@ export default function TrainingPage() {
             </div>
           )}
 
-          {/* Complete */}
+          {/* Training complete — show adapter path + merge button */}
           {jobStatus.status === 'complete' && (
-            <div className="flex items-center gap-2 text-green-400">
-              <span>✓</span>
-              <span>Adapter saved to <code className="text-xs bg-gray-800 px-1 rounded">data/models/{job.job_id}/</code></span>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-green-400">
+                <span>✓</span>
+                <span>
+                  Adapter saved to{' '}
+                  <code className="text-xs bg-gray-800 px-1 rounded">
+                    data/models/{job.job_id}/
+                  </code>
+                </span>
+              </div>
+              <button
+                onClick={triggerMerge}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
+              >
+                Merge &amp; load into Ollama
+              </button>
             </div>
           )}
 
-          {/* Failed */}
+          {/* Merging */}
+          {jobStatus.status === 'merging' && (
+            <div className="flex items-center gap-3 text-blue-300">
+              <Spinner />
+              <span>Merging model…</span>
+            </div>
+          )}
+
+          {/* Merged — success */}
+          {jobStatus.status === 'merged' && (
+            <div className="p-3 bg-green-950 border border-green-700 rounded-xl text-green-300 text-sm">
+              🎉 Nexus is ready — open Chat and select{' '}
+              <span className="font-mono font-semibold">nexus</span> from the dropdown.
+            </div>
+          )}
+
+          {/* Training failed */}
           {jobStatus.status === 'failed' && jobStatus.error && (
             <div className="p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs font-mono whitespace-pre-wrap">
               {jobStatus.error}
+            </div>
+          )}
+
+          {/* Merge failed */}
+          {jobStatus.status === 'merge_failed' && (
+            <div className="space-y-3">
+              {jobStatus.error && (
+                <div className="p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs font-mono whitespace-pre-wrap">
+                  {jobStatus.error}
+                </div>
+              )}
+              <button
+                onClick={triggerMerge}
+                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
+              >
+                Retry merge
+              </button>
             </div>
           )}
 
@@ -186,8 +266,29 @@ function StatusDot({ status }: { status: JobStatus }) {
     training: 'bg-blue-500 animate-pulse',
     complete: 'bg-green-500',
     failed: 'bg-red-500',
+    merging: 'bg-purple-500 animate-pulse',
+    merged: 'bg-green-400',
+    merge_failed: 'bg-red-500',
   }
   return <span className={`w-2.5 h-2.5 rounded-full inline-block ${colors[status]}`} />
+}
+
+function Spinner() {
+  return (
+    <svg
+      className="w-4 h-4 animate-spin text-blue-400"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  )
 }
 
 function Row({ label, value }: { label: string; value: string }) {

@@ -1,0 +1,17 @@
+{
+  "aa6331f9-6ae2-46b1-b48e-ef95719d0cd2": {
+    "status": "merging",
+    "progress": 100,
+    "error": null
+  },
+  "425422e6-b092-4819-a36e-693a35fe23ee": {
+    "status": "merging",
+    "progress": 100,
+    "error": null
+  },
+  "5e780116-b948-4401-9a6b-d00dd55372a8": {
+    "status": "merge_failed",
+    "progress": 100,
+    "error": "Unsloth: GGUF conversion failed: [FAIL] Unsloth: You do not have internet connection!"
+  }
+}
