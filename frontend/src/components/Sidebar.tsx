@@ -15,9 +15,10 @@ const links: { id: Page; label: string; icon: string }[] = [
 export default function Sidebar({ current, onNavigate }: Props) {
   return (
     <aside className="w-52 bg-gray-900 border-r border-gray-800 flex flex-col">
-      <div className="px-4 py-5 border-b border-gray-800">
-        <h1 className="text-lg font-bold text-white">LocalAI</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Platform</p>
+      {/* data-tauri-drag-region: allows dragging the frameless window from this header area */}
+      <div data-tauri-drag-region className="px-4 py-5 border-b border-gray-800 cursor-default">
+        <h1 className="text-lg font-bold text-white pointer-events-none">LocalAI</h1>
+        <p className="text-xs text-gray-400 mt-0.5 pointer-events-none">Platform</p>
       </div>
       <nav className="flex-1 p-3 space-y-1">
         {links.map(({ id, label, icon }) => (

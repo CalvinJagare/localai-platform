@@ -3,3 +3,7 @@ backend/data/training/
 backend/unsloth_compiled_cache/
 __pycache__/
 *.pyc
+
+# Tauri
+frontend/src-tauri/target/
+frontend/src-tauri/WixTools/
