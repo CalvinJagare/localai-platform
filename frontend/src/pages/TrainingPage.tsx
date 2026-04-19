@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-
-const API = 'http://localhost:8000'
+import { API, type Profile } from '../App'
 
 type JobStatus =
   | 'queued'
@@ -33,37 +32,57 @@ interface JobRecord {
   error: string | null
   created_at?: string
   ollama_model?: string
-  model_name?: string
+  profile_id?: string
 }
 
-// Statuses where nothing is changing server-side — no need to poll
 const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed']
 
-export default function TrainingPage() {
-  const [dragging, setDragging] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [job, setJob] = useState<UploadResult | null>(null)
-  const [jobStatus, setJobStatus] = useState<StatusResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+interface Props {
+  profile: Profile | null
+  onProfileUpdate: (p: Profile) => void
+}
+
+export default function TrainingPage({ profile, onProfileUpdate }: Props) {
+  const [dragging, setDragging]     = useState(false)
+  const [uploading, setUploading]   = useState(false)
+  const [job, setJob]               = useState<UploadResult | null>(null)
+  const [jobStatus, setJobStatus]   = useState<StatusResult | null>(null)
+  const [error, setError]           = useState<string | null>(null)
   const [jobHistory, setJobHistory] = useState<JobRecord[]>([])
-  const [modelName, setModelName] = useState('nexus')
-  const inputRef = useRef<HTMLInputElement>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const inputRef  = useRef<HTMLInputElement>(null)
+  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function fetchHistory() {
+    if (!profile) return
     try {
-      const resp = await fetch(`${API}/jobs`)
+      const resp = await fetch(`${API}/jobs?profile_id=${profile.id}`)
       if (!resp.ok) return
       setJobHistory(await resp.json())
     } catch {}
   }
 
-  // Load job history on mount
-  useEffect(() => { fetchHistory() }, [])
+  // Reload history when profile changes
+  useEffect(() => {
+    setJob(null)
+    setJobStatus(null)
+    setError(null)
+    fetchHistory()
+  }, [profile?.id])
 
-  // Restart / stop polling whenever the status changes.
-  // 'complete' stops polling but triggerMerge() transitions to 'merging',
-  // which causes this effect to re-run and restart polling automatically.
+  // After a successful merge, re-fetch the profile so current_model is updated
+  useEffect(() => {
+    if (jobStatus?.status === 'merged' && profile) {
+      fetch(`${API}/profiles`)
+        .then(r => r.json())
+        .then((all: Profile[]) => {
+          const updated = all.find(p => p.id === profile.id)
+          if (updated) onProfileUpdate(updated)
+        })
+        .catch(() => {})
+    }
+  }, [jobStatus?.status])
+
+  // Restart / stop polling whenever the status changes
   useEffect(() => {
     if (!job) return
     if (TERMINAL.includes(jobStatus?.status ?? ('' as JobStatus))) return
@@ -74,7 +93,10 @@ export default function TrainingPage() {
         if (!resp.ok) return
         const data: StatusResult = await resp.json()
         setJobStatus(data)
-        if (TERMINAL.includes(data.status)) clearInterval(pollRef.current!)
+        if (TERMINAL.includes(data.status)) {
+          clearInterval(pollRef.current!)
+          fetchHistory()
+        }
       } catch {
         // network hiccup — keep polling
       }
@@ -84,10 +106,9 @@ export default function TrainingPage() {
   }, [job, jobStatus?.status])
 
   async function uploadFile(file: File) {
-    if (!file.name.endsWith('.jsonl')) {
-      setError('Only .jsonl files are supported.')
-      return
-    }
+    if (!file.name.endsWith('.jsonl')) { setError('Only .jsonl files are supported.'); return }
+    if (!profile) { setError('No profile selected.'); return }
+
     setError(null)
     setJob(null)
     setJobStatus(null)
@@ -96,7 +117,7 @@ export default function TrainingPage() {
     try {
       const form = new FormData()
       form.append('file', file)
-      form.append('model_name', modelName.trim() || 'nexus')
+      form.append('profile_id', profile.id)
       const resp = await fetch(`${API}/train`, { method: 'POST', body: form })
       if (!resp.ok) {
         const data = await resp.json()
@@ -121,7 +142,6 @@ export default function TrainingPage() {
         const data = await resp.json()
         throw new Error(data.detail ?? resp.statusText)
       }
-      // Optimistic update — transitions status to 'merging' which restarts polling
       setJobStatus(prev => prev ? { ...prev, status: 'merging', error: null } : null)
       fetchHistory()
     } catch (err) {
@@ -144,8 +164,7 @@ export default function TrainingPage() {
   }
 
   function onDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragging(false)
+    e.preventDefault(); setDragging(false)
     const file = e.dataTransfer.files[0]
     if (file) uploadFile(file)
   }
@@ -155,32 +174,35 @@ export default function TrainingPage() {
     if (file) uploadFile(file)
   }
 
-  const isActive =
-    jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
+  const isActive = jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
+
+  if (!profile) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <p className="text-gray-500 text-sm">Select a profile from the sidebar to start training.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
-      <h2 className="text-xl font-semibold mb-1">Training Data Upload</h2>
-      <p className="text-sm text-gray-400 mb-8">
+      <h2 className="text-xl font-semibold mb-1">Training</h2>
+      <p className="text-sm text-gray-400 mb-2">
         Upload a <code className="bg-gray-800 px-1 rounded text-gray-200">.jsonl</code> file to
         start a QLoRA fine-tuning job on{' '}
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
 
-      {/* Model name */}
-      <div className="mb-4">
-        <label className="block text-sm text-gray-400 mb-1.5">Model name</label>
-        <input
-          type="text"
-          value={modelName}
-          onChange={(e) => setModelName(e.target.value)}
-          disabled={!!isActive}
-          placeholder="nexus"
-          className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-        />
+      {/* Active profile badge */}
+      <div className="mb-6 inline-flex items-center gap-2 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm">
+        <span className="text-gray-400">Training for:</span>
+        <span className="font-medium text-gray-200">{profile.display_name}</span>
+        {profile.current_model && (
+          <span className="text-xs text-gray-500 font-mono">({profile.current_model})</span>
+        )}
       </div>
 
-      {/* Drop zone — disabled while training or merging */}
+      {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); if (!isActive) setDragging(true) }}
         onDragLeave={() => setDragging(false)}
@@ -205,28 +227,21 @@ export default function TrainingPage() {
         <p className="text-xs text-gray-500 mt-1">Accepted format: .jsonl</p>
       </div>
 
-      {/* Upload / merge-start errors */}
       {error && (
-        <div className="mt-4 p-4 bg-red-950 border border-red-700 rounded-xl text-sm text-red-300">
-          {error}
-        </div>
+        <div className="mt-4 p-4 bg-red-950 border border-red-700 rounded-xl text-sm text-red-300">{error}</div>
       )}
 
-      {/* Job card */}
+      {/* Active job card */}
       {job && jobStatus && (
         <div className="mt-5 p-5 bg-gray-900 border border-gray-800 rounded-2xl space-y-4 text-sm">
-          {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium">
               <StatusDot status={jobStatus.status} />
-              <span className="capitalize text-gray-200">
-                {jobStatus.status.replace('_', ' ')}
-              </span>
+              <span className="capitalize text-gray-200">{jobStatus.status.replace('_', ' ')}</span>
             </div>
             <span className="text-xs text-gray-500 font-mono">{job.job_id.slice(0, 8)}…</span>
           </div>
 
-          {/* Training progress bar */}
           {(jobStatus.status === 'queued' || jobStatus.status === 'training') && (
             <div>
               <div className="flex justify-between text-xs text-gray-400 mb-1.5">
@@ -242,17 +257,11 @@ export default function TrainingPage() {
             </div>
           )}
 
-          {/* Training complete — show adapter path + merge button */}
           {jobStatus.status === 'complete' && (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-green-400">
                 <span>✓</span>
-                <span>
-                  Adapter saved to{' '}
-                  <code className="text-xs bg-gray-800 px-1 rounded">
-                    data/models/{job.job_id}/
-                  </code>
-                </span>
+                <span>Adapter saved — ready to merge into <span className="font-medium">{profile.display_name}</span></span>
               </div>
               <button
                 onClick={triggerMerge}
@@ -263,7 +272,6 @@ export default function TrainingPage() {
             </div>
           )}
 
-          {/* Merging */}
           {jobStatus.status === 'merging' && (
             <div className="flex items-center gap-3 text-blue-300">
               <Spinner />
@@ -271,15 +279,12 @@ export default function TrainingPage() {
             </div>
           )}
 
-          {/* Merged — success */}
           {jobStatus.status === 'merged' && (
             <div className="p-3 bg-green-950 border border-green-700 rounded-xl text-green-300 text-sm">
-              🎉 Ready — open Chat and select{' '}
-              <span className="font-mono font-semibold">{jobStatus.ollama_model ?? 'nexus'}</span> from the dropdown.
+              🎉 <span className="font-medium">{profile.display_name}</span> is ready — switch to Chat to start talking.
             </div>
           )}
 
-          {/* Training failed */}
           {jobStatus.status === 'failed' && jobStatus.error && (
             <details open>
               <summary className="text-xs text-red-400 cursor-pointer select-none">⚠ Error (click to collapse)</summary>
@@ -287,7 +292,6 @@ export default function TrainingPage() {
             </details>
           )}
 
-          {/* Merge failed */}
           {jobStatus.status === 'merge_failed' && (
             <div className="space-y-3">
               {jobStatus.error && (
@@ -296,19 +300,15 @@ export default function TrainingPage() {
                   <pre className="mt-1.5 p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{jobStatus.error}</pre>
                 </details>
               )}
-              <button
-                onClick={triggerMerge}
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
-              >
+              <button onClick={triggerMerge} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors">
                 Retry merge
               </button>
             </div>
           )}
 
-          {/* Metadata */}
           <div className="border-t border-gray-800 pt-3 space-y-1.5">
-            <Row label="File" value={job.filename} />
-            <Row label="Size" value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />
+            <Row label="File"       value={job.filename} />
+            <Row label="Size"       value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />
             <Row label="Base model" value="unsloth/Phi-3-mini-4k-instruct" />
           </div>
         </div>
@@ -317,23 +317,16 @@ export default function TrainingPage() {
       {/* Job history */}
       {jobHistory.length > 0 && (
         <div className="mt-8">
-          <h3 className="text-sm font-semibold text-gray-400 mb-3">Job History</h3>
+          <h3 className="text-sm font-semibold text-gray-400 mb-3">
+            Job History — {profile.display_name}
+          </h3>
           <div className="space-y-2">
             {jobHistory.map(j => (
-              <div
-                key={j.job_id}
-                className="p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm"
-              >
+              <div key={j.job_id} className="p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm">
                 <div className="flex items-center gap-3">
                   <StatusDot status={j.status} />
                   <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
-                  <span className="flex-1 text-gray-300 truncate">
-                    {j.model_name ? (
-                      <span className="font-medium text-indigo-300">{j.model_name}</span>
-                    ) : null}
-                    {j.model_name && j.filename ? <span className="text-gray-600 mx-1">·</span> : null}
-                    {j.filename ?? 'unknown'}
-                  </span>
+                  <span className="flex-1 text-gray-400 truncate">{j.filename ?? 'unknown'}</span>
                   <span className="text-xs text-gray-500 capitalize shrink-0">{j.status.replace('_', ' ')}</span>
                   {j.created_at && (
                     <span className="text-xs text-gray-600 shrink-0">
@@ -365,12 +358,12 @@ export default function TrainingPage() {
 
 function StatusDot({ status }: { status: JobStatus }) {
   const colors: Record<JobStatus, string> = {
-    queued: 'bg-yellow-500',
-    training: 'bg-blue-500 animate-pulse',
-    complete: 'bg-green-500',
-    failed: 'bg-red-500',
-    merging: 'bg-purple-500 animate-pulse',
-    merged: 'bg-green-400',
+    queued:       'bg-yellow-500',
+    training:     'bg-blue-500 animate-pulse',
+    complete:     'bg-green-500',
+    failed:       'bg-red-500',
+    merging:      'bg-purple-500 animate-pulse',
+    merged:       'bg-green-400',
     merge_failed: 'bg-red-500',
   }
   return <span className={`w-2.5 h-2.5 rounded-full inline-block ${colors[status]}`} />
@@ -378,18 +371,9 @@ function StatusDot({ status }: { status: JobStatus }) {
 
 function Spinner() {
   return (
-    <svg
-      className="w-4 h-4 animate-spin text-blue-400"
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
+    <svg className="w-4 h-4 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
     </svg>
   )
 }

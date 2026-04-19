@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import json
 import glob
@@ -30,6 +31,7 @@ PYTHON = "/usr/bin/python3"
 TRAINING_DIR = Path(__file__).parent / "data" / "training"
 MODELS_DIR = Path(__file__).parent / "data" / "models"
 JOBS_FILE = Path(__file__).parent / "data" / "jobs.json"
+PROFILES_FILE = Path(__file__).parent / "data" / "profiles.json"
 TRAINING_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -73,10 +75,89 @@ def _update_job(job_id: str, **kwargs) -> None:
 # Initialise from disk so a --reload doesn't lose running jobs
 jobs: dict[str, dict] = _load_jobs()
 
+# ---------------------------------------------------------------------------
+# Profile store — backed by /data/profiles.json
+# ---------------------------------------------------------------------------
+
+_profiles_lock = threading.Lock()
+
+
+def _load_profiles() -> dict[str, dict]:
+    try:
+        return json.loads(PROFILES_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_profiles() -> None:
+    """Atomically write profiles dict to disk. Must be called under _profiles_lock."""
+    tmp = PROFILES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(profiles, indent=2))
+    tmp.replace(PROFILES_FILE)
+
+
+def _get_default_profile_id() -> str | None:
+    """Return the ID of the 'default' slug profile, or the first profile. Call under _profiles_lock."""
+    for pid, p in profiles.items():
+        if p.get("slug") == "default":
+            return pid
+    return next(iter(profiles), None)
+
+
+def _ensure_default_profile() -> None:
+    """Create a Default profile if none exist, and assign orphan jobs to it."""
+    with _profiles_lock:
+        if not profiles:
+            pid = str(uuid.uuid4())
+            profiles[pid] = {
+                "slug": "default",
+                "display_name": "Default",
+                "color": "indigo",
+                "current_model": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _save_profiles()
+        default_pid = _get_default_profile_id()
+
+    if default_pid:
+        with _jobs_lock:
+            changed = False
+            for job in jobs.values():
+                if not job.get("profile_id"):
+                    job["profile_id"] = default_pid
+                    changed = True
+            if changed:
+                _save_jobs()
+
+
+def make_slug(display_name: str) -> str:
+    s = display_name.lower().strip()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "profile"
+
+
+profiles: dict[str, dict] = _load_profiles()
+_ensure_default_profile()
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
 
 class ChatRequest(BaseModel):
     message: str
     model: str
+
+
+class ProfileCreate(BaseModel):
+    display_name: str
+    color: str = "indigo"
+
+
+class ProfileUpdate(BaseModel):
+    display_name: str
 
 
 # ---------------------------------------------------------------------------
@@ -205,18 +286,25 @@ def run_merge(job_id: str) -> None:
     gguf_dir = adapter_dir / "gguf"
     gguf_path = gguf_dir / "model-f16.gguf"
     modelfile_path = gguf_dir / "Modelfile"
+
     with _jobs_lock:
-        model_name = jobs[job_id].get("model_name") or f"nexus-{job_id[:8]}"
+        job_snapshot = dict(jobs[job_id])
+
+    profile_id = job_snapshot.get("profile_id")
+
+    # Model name = profile slug (e.g. "sales"), fallback to legacy model_name field
+    if profile_id:
+        with _profiles_lock:
+            profile = profiles.get(profile_id)
+        model_name = profile["slug"] if profile else job_snapshot.get("model_name") or f"nexus-{job_id[:8]}"
+    else:
+        model_name = job_snapshot.get("model_name") or f"nexus-{job_id[:8]}"
 
     print(f"[merge] adapter_dir:   {adapter_dir}")
     print(f"[merge] merged_hf_dir: {merged_hf_dir}")
     print(f"[merge] gguf_dir:      {gguf_dir}")
     print(f"[merge] gguf_path:     {gguf_path}")
-
-    assert adapter_dir is not None, "adapter_dir is None"
-    assert merged_hf_dir is not None, "merged_hf_dir is None"
-    assert gguf_dir is not None, "gguf_dir is None"
-    assert gguf_path is not None, "gguf_path is None"
+    print(f"[merge] model_name:    {model_name}  (profile_id: {profile_id})")
 
     if not adapter_dir.exists():
         _update_job(job_id, status="merge_failed",
@@ -291,6 +379,13 @@ def run_merge(job_id: str) -> None:
 
         _update_job(job_id, status="merged", ollama_model=model_name, error=None)
 
+        # Update the profile's active model
+        if profile_id:
+            with _profiles_lock:
+                if profile_id in profiles:
+                    profiles[profile_id]["current_model"] = model_name
+                    _save_profiles()
+
     except Exception:
         _update_job(job_id, status="merge_failed", error=traceback.format_exc())
 
@@ -334,11 +429,20 @@ async def chat(req: ChatRequest):
 async def train(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    model_name: str = Form("nexus"),
+    profile_id: str = Form(""),
 ):
     """Save the uploaded .jsonl file then kick off a background training job."""
     if not file.filename or not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only .jsonl files are accepted.")
+
+    # Resolve profile: validate if provided, fall back to default
+    resolved_profile_id = profile_id or ""
+    with _profiles_lock:
+        if resolved_profile_id and resolved_profile_id not in profiles:
+            raise HTTPException(status_code=400, detail="Profile not found.")
+        if not resolved_profile_id:
+            resolved_profile_id = _get_default_profile_id() or ""
+        model_name = profiles[resolved_profile_id]["slug"] if resolved_profile_id in profiles else "nexus"
 
     job_id = str(uuid.uuid4())
     dest = TRAINING_DIR / f"{job_id}_{file.filename}"
@@ -352,7 +456,8 @@ async def train(
             "progress": 0,
             "error": None,
             "filename": file.filename,
-            "model_name": model_name or "nexus",
+            "model_name": model_name,
+            "profile_id": resolved_profile_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_jobs()
@@ -382,11 +487,13 @@ async def train_status(job_id: str):
 
 
 @app.get("/jobs")
-async def list_jobs():
-    """Return all jobs sorted by most recent first."""
+async def list_jobs(profile_id: str | None = None):
+    """Return jobs sorted by most recent first, optionally filtered by profile."""
     with _jobs_lock:
         snapshot = dict(jobs)
     result = [{"job_id": k, **v} for k, v in snapshot.items()]
+    if profile_id:
+        result = [j for j in result if j.get("profile_id") == profile_id]
     result.sort(key=lambda j: j.get("created_at", ""), reverse=True)
     return result
 
@@ -419,7 +526,7 @@ async def delete_job(job_id: str):
 
 @app.post("/train/{job_id}/merge")
 async def merge(job_id: str, background_tasks: BackgroundTasks):
-    """Merge the trained LoRA adapter, export to GGUF, and register in Ollama as 'nexus'."""
+    """Merge the trained LoRA adapter, export to GGUF, and register in Ollama."""
     with _jobs_lock:
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found.")
@@ -436,6 +543,83 @@ async def merge(job_id: str, background_tasks: BackgroundTasks):
 
     return {"status": "merging"}
 
+
+# ---------------------------------------------------------------------------
+# Profile routes
+# ---------------------------------------------------------------------------
+
+@app.get("/profiles")
+async def list_profiles():
+    """Return all profiles with a denormalized job count."""
+    with _profiles_lock:
+        profiles_snapshot = dict(profiles)
+    with _jobs_lock:
+        jobs_snapshot = dict(jobs)
+
+    result = []
+    for pid, p in profiles_snapshot.items():
+        job_count = sum(1 for j in jobs_snapshot.values() if j.get("profile_id") == pid)
+        result.append({"id": pid, **p, "job_count": job_count})
+    result.sort(key=lambda p: p.get("created_at", ""))
+    return result
+
+
+@app.post("/profiles", status_code=201)
+async def create_profile(body: ProfileCreate):
+    """Create a new profile. Slug is auto-generated from display_name."""
+    base_slug = make_slug(body.display_name)
+    with _profiles_lock:
+        existing_slugs = {p["slug"] for p in profiles.values()}
+        slug = base_slug
+        n = 2
+        while slug in existing_slugs:
+            slug = f"{base_slug}-{n}"
+            n += 1
+        pid = str(uuid.uuid4())
+        profiles[pid] = {
+            "slug": slug,
+            "display_name": body.display_name,
+            "color": body.color,
+            "current_model": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_profiles()
+    return {"id": pid, **profiles[pid]}
+
+
+@app.patch("/profiles/{profile_id}")
+async def update_profile(profile_id: str, body: ProfileUpdate):
+    """Rename a profile's display name. Slug is immutable."""
+    with _profiles_lock:
+        if profile_id not in profiles:
+            raise HTTPException(status_code=404, detail="Profile not found.")
+        profiles[profile_id]["display_name"] = body.display_name
+        _save_profiles()
+        return {"id": profile_id, **profiles[profile_id]}
+
+
+@app.delete("/profiles/{profile_id}")
+async def delete_profile(profile_id: str):
+    """Delete a profile. Fails if the profile has active training or merge jobs."""
+    with _jobs_lock:
+        active = any(
+            j.get("profile_id") == profile_id and j["status"] in ("training", "merging")
+            for j in jobs.values()
+        )
+    if active:
+        raise HTTPException(status_code=400, detail="Cannot delete a profile with active jobs.")
+
+    with _profiles_lock:
+        if profile_id not in profiles:
+            raise HTTPException(status_code=404, detail="Profile not found.")
+        del profiles[profile_id]
+        _save_profiles()
+    return {"deleted": profile_id}
+
+
+# ---------------------------------------------------------------------------
+# Data routes
+# ---------------------------------------------------------------------------
 
 @app.get("/data/files")
 async def list_data_files():
@@ -488,6 +672,10 @@ async def delete_data_file(filename: str):
     path.unlink()
     return {"deleted": safe}
 
+
+# ---------------------------------------------------------------------------
+# Misc routes
+# ---------------------------------------------------------------------------
 
 @app.get("/models")
 async def models():

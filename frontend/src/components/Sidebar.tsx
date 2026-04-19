@@ -1,25 +1,39 @@
-import type { Page } from '../App'
+import type { Page, Profile } from '../App'
+import ProfileSelector from './ProfileSelector'
 
 interface Props {
   current: Page
   onNavigate: (p: Page) => void
+  profiles: Profile[]
+  selectedProfileId: string
+  onSelectProfile: (id: string) => void
+  onProfilesChange: (profiles: Profile[]) => void
 }
 
 const links: { id: Page; label: string; icon: string }[] = [
-  { id: 'chat', label: 'Chat', icon: '💬' },
+  { id: 'chat',     label: 'Chat',     icon: '💬' },
   { id: 'training', label: 'Training', icon: '🧠' },
-  { id: 'data', label: 'Data', icon: '🗂️' },
-  { id: 'health', label: 'Health', icon: '📊' },
+  { id: 'data',     label: 'Data',     icon: '🗂️' },
+  { id: 'profiles', label: 'Profiles', icon: '👤' },
+  { id: 'health',   label: 'Health',   icon: '📊' },
 ]
 
-export default function Sidebar({ current, onNavigate }: Props) {
+export default function Sidebar({ current, onNavigate, profiles, selectedProfileId, onSelectProfile, onProfilesChange }: Props) {
   return (
     <aside className="w-52 bg-gray-900 border-r border-gray-800 flex flex-col">
       {/* data-tauri-drag-region: allows dragging the frameless window from this header area */}
-      <div data-tauri-drag-region className="px-4 py-5 border-b border-gray-800 cursor-default">
+      <div data-tauri-drag-region className="px-4 py-4 border-b border-gray-800 cursor-default">
         <h1 className="text-lg font-bold text-white pointer-events-none">LocalAI</h1>
         <p className="text-xs text-gray-400 mt-0.5 pointer-events-none">Platform</p>
       </div>
+
+      <ProfileSelector
+        profiles={profiles}
+        selectedProfileId={selectedProfileId}
+        onSelectProfile={onSelectProfile}
+        onProfilesChange={onProfilesChange}
+      />
+
       <nav className="flex-1 p-3 space-y-1">
         {links.map(({ id, label, icon }) => (
           <button

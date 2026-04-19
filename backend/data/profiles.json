@@ -1,0 +1,16 @@
+{
+  "58d6cd4e-d0e4-48d0-854c-7141632ff556": {
+    "slug": "default",
+    "display_name": "Default",
+    "color": "indigo",
+    "current_model": null,
+    "created_at": "2026-04-19T23:37:00.459306+00:00"
+  },
+  "849d39aa-4b5b-4a5c-93b7-04b4c13b4ea1": {
+    "slug": "hr",
+    "display_name": "HR",
+    "color": "rose",
+    "current_model": null,
+    "created_at": "2026-04-19T23:43:19.753598+00:00"
+  }
+}
