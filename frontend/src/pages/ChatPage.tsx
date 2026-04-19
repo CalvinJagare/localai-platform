@@ -25,9 +25,32 @@ export default function ChatPage() {
       .catch(() => setModels([]))
   }, [])
 
+  // Load history when model changes
+  useEffect(() => {
+    if (!selectedModel) return
+    try {
+      const stored = localStorage.getItem(`chat_history_${selectedModel}`)
+      setMessages(stored ? JSON.parse(stored) : [])
+    } catch {
+      setMessages([])
+    }
+  }, [selectedModel])
+
+  // Persist messages whenever they change
+  useEffect(() => {
+    if (!selectedModel) return
+    localStorage.setItem(`chat_history_${selectedModel}`, JSON.stringify(messages))
+  }, [messages, selectedModel])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  function clearChat() {
+    if (!selectedModel) return
+    setMessages([])
+    localStorage.removeItem(`chat_history_${selectedModel}`)
+  }
 
   async function sendMessage() {
     if (!input.trim() || streaming || !selectedModel) return
@@ -111,6 +134,14 @@ export default function ChatPage() {
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
+        {messages.length > 0 && (
+          <button
+            onClick={clearChat}
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors shrink-0"
+          >
+            Clear chat
+          </button>
+        )}
       </div>
 
       {/* Messages */}

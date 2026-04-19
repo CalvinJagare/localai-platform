@@ -1,14 +1,17 @@
 import os
 import uuid
 import json
+import glob
+import shutil
 import subprocess
 import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import psutil
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -17,7 +20,11 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HOME"] = "/mnt/d/hf-cache"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-OLLAMA_BASE = "http://localhost:11434"
+if not os.environ.get("OLLAMA_MODELS"):
+    os.environ["OLLAMA_MODELS"] = "/mnt/d/ollama-models"
+Path(os.environ["OLLAMA_MODELS"]).mkdir(parents=True, exist_ok=True)
+
+OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 LLAMA_CPP_CONVERT = Path("/mnt/d/llama.cpp/convert_hf_to_gguf.py")
 PYTHON = "/usr/bin/python3"
 TRAINING_DIR = Path(__file__).parent / "data" / "training"
@@ -183,8 +190,8 @@ def run_training(job_id: str, data_path: Path) -> None:
 
         _update_job(job_id, status="complete", progress=100, error=None)
 
-    except Exception as exc:
-        _update_job(job_id, status="failed", error=str(exc))
+    except Exception:
+        _update_job(job_id, status="failed", error=traceback.format_exc())
 
 
 def run_merge(job_id: str) -> None:
@@ -193,14 +200,13 @@ def run_merge(job_id: str) -> None:
     Merges the LoRA adapter into the base model, converts to GGUF via
     llama.cpp, then registers the result in Ollama via CLI.
     """
-    import shutil
-
     adapter_dir = MODELS_DIR / job_id
     merged_hf_dir = adapter_dir / "merged_hf"
     gguf_dir = adapter_dir / "gguf"
     gguf_path = gguf_dir / "model-f16.gguf"
     modelfile_path = gguf_dir / "Modelfile"
-    model_name = f"nexus-{job_id[:8]}"
+    with _jobs_lock:
+        model_name = jobs[job_id].get("model_name") or f"nexus-{job_id[:8]}"
 
     print(f"[merge] adapter_dir:   {adapter_dir}")
     print(f"[merge] merged_hf_dir: {merged_hf_dir}")
@@ -285,8 +291,8 @@ def run_merge(job_id: str) -> None:
 
         _update_job(job_id, status="merged", ollama_model=model_name, error=None)
 
-    except Exception as exc:
-        _update_job(job_id, status="merge_failed", error=str(exc))
+    except Exception:
+        _update_job(job_id, status="merge_failed", error=traceback.format_exc())
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +331,11 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/train")
-async def train(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def train(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    model_name: str = Form("nexus"),
+):
     """Save the uploaded .jsonl file then kick off a background training job."""
     if not file.filename or not file.filename.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="Only .jsonl files are accepted.")
@@ -342,6 +352,7 @@ async def train(background_tasks: BackgroundTasks, file: UploadFile = File(...))
             "progress": 0,
             "error": None,
             "filename": file.filename,
+            "model_name": model_name or "nexus",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_jobs()
@@ -380,6 +391,32 @@ async def list_jobs():
     return result
 
 
+@app.delete("/train/{job_id}")
+async def delete_job(job_id: str):
+    """Delete a job record and its associated model/training files."""
+    with _jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if jobs[job_id]["status"] in ("training", "merging"):
+            raise HTTPException(status_code=400, detail="Cannot delete an active job.")
+        del jobs[job_id]
+        _save_jobs()
+
+    # Clean up model directory
+    model_dir = MODELS_DIR / job_id
+    if model_dir.exists():
+        shutil.rmtree(model_dir, ignore_errors=True)
+
+    # Clean up training file(s)
+    for f in glob.glob(str(TRAINING_DIR / f"{job_id}_*")):
+        try:
+            Path(f).unlink()
+        except Exception:
+            pass
+
+    return {"deleted": job_id}
+
+
 @app.post("/train/{job_id}/merge")
 async def merge(job_id: str, background_tasks: BackgroundTasks):
     """Merge the trained LoRA adapter, export to GGUF, and register in Ollama as 'nexus'."""
@@ -398,6 +435,58 @@ async def merge(job_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_merge, job_id)
 
     return {"status": "merging"}
+
+
+@app.get("/data/files")
+async def list_data_files():
+    """Return metadata for every .jsonl file in the training directory."""
+    files = []
+    for path in sorted(TRAINING_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
+        stat = path.stat()
+        try:
+            line_count = sum(1 for line in path.open() if line.strip())
+        except Exception:
+            line_count = 0
+        files.append({
+            "filename": path.name,
+            "display_name": path.name[37:] if len(path.name) > 37 and path.name[36] == "_" else path.name,
+            "size_bytes": stat.st_size,
+            "line_count": line_count,
+            "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return files
+
+
+@app.get("/data/files/{filename}/preview")
+async def preview_data_file(filename: str):
+    """Return the first 5 parsed JSON records from a training file."""
+    safe = Path(filename).name
+    path = TRAINING_DIR / safe
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    records = []
+    try:
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+                if len(records) >= 5:
+                    break
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
+    return {"records": records}
+
+
+@app.delete("/data/files/{filename}")
+async def delete_data_file(filename: str):
+    """Delete a training file from disk."""
+    safe = Path(filename).name
+    path = TRAINING_DIR / safe
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    path.unlink()
+    return {"deleted": safe}
 
 
 @app.get("/models")

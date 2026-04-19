@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - /mnt/d/localai-platform/backend/data:/app/data
+      - /mnt/d/hf-cache:/mnt/d/hf-cache
+      - /mnt/d/ollama-models:/mnt/d/ollama-models
+      - /mnt/d/llama.cpp:/mnt/d/llama.cpp
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODELS=/mnt/d/ollama-models
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

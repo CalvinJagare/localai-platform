@@ -2,9 +2,10 @@ import { useState } from 'react'
 import Sidebar from './components/Sidebar'
 import ChatPage from './pages/ChatPage'
 import TrainingPage from './pages/TrainingPage'
+import DataPage from './pages/DataPage'
 import HealthPage from './pages/HealthPage'
 
-export type Page = 'chat' | 'training' | 'health'
+export type Page = 'chat' | 'training' | 'data' | 'health'
 
 export default function App() {
   const [page, setPage] = useState<Page>('chat')
@@ -15,6 +16,7 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         {page === 'chat' && <ChatPage />}
         {page === 'training' && <TrainingPage />}
+        {page === 'data' && <DataPage />}
         {page === 'health' && <HealthPage />}
       </main>
     </div>

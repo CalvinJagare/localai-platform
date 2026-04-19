@@ -8,6 +8,7 @@ interface Props {
 const links: { id: Page; label: string; icon: string }[] = [
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'training', label: 'Training', icon: '🧠' },
+  { id: 'data', label: 'Data', icon: '🗂️' },
   { id: 'health', label: 'Health', icon: '📊' },
 ]
 

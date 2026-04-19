@@ -33,6 +33,7 @@ interface JobRecord {
   error: string | null
   created_at?: string
   ollama_model?: string
+  model_name?: string
 }
 
 // Statuses where nothing is changing server-side — no need to poll
@@ -45,6 +46,7 @@ export default function TrainingPage() {
   const [jobStatus, setJobStatus] = useState<StatusResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [jobHistory, setJobHistory] = useState<JobRecord[]>([])
+  const [modelName, setModelName] = useState('nexus')
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -94,6 +96,7 @@ export default function TrainingPage() {
     try {
       const form = new FormData()
       form.append('file', file)
+      form.append('model_name', modelName.trim() || 'nexus')
       const resp = await fetch(`${API}/train`, { method: 'POST', body: form })
       if (!resp.ok) {
         const data = await resp.json()
@@ -126,6 +129,20 @@ export default function TrainingPage() {
     }
   }
 
+  async function deleteJob(jobId: string) {
+    if (!window.confirm('Delete this job and its model files?')) return
+    try {
+      const resp = await fetch(`${API}/train/${jobId}`, { method: 'DELETE' })
+      if (!resp.ok) {
+        const data = await resp.json()
+        throw new Error(data.detail ?? resp.statusText)
+      }
+      setJobHistory(prev => prev.filter(j => j.job_id !== jobId))
+    } catch (err) {
+      setError(`Delete failed: ${String(err)}`)
+    }
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragging(false)
@@ -149,6 +166,19 @@ export default function TrainingPage() {
         start a QLoRA fine-tuning job on{' '}
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
+
+      {/* Model name */}
+      <div className="mb-4">
+        <label className="block text-sm text-gray-400 mb-1.5">Model name</label>
+        <input
+          type="text"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+          disabled={!!isActive}
+          placeholder="nexus"
+          className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+        />
+      </div>
 
       {/* Drop zone — disabled while training or merging */}
       <div
@@ -251,18 +281,20 @@ export default function TrainingPage() {
 
           {/* Training failed */}
           {jobStatus.status === 'failed' && jobStatus.error && (
-            <div className="p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs font-mono whitespace-pre-wrap">
-              {jobStatus.error}
-            </div>
+            <details open>
+              <summary className="text-xs text-red-400 cursor-pointer select-none">⚠ Error (click to collapse)</summary>
+              <pre className="mt-1.5 p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{jobStatus.error}</pre>
+            </details>
           )}
 
           {/* Merge failed */}
           {jobStatus.status === 'merge_failed' && (
             <div className="space-y-3">
               {jobStatus.error && (
-                <div className="p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs font-mono whitespace-pre-wrap">
-                  {jobStatus.error}
-                </div>
+                <details open>
+                  <summary className="text-xs text-red-400 cursor-pointer select-none">⚠ Error (click to collapse)</summary>
+                  <pre className="mt-1.5 p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{jobStatus.error}</pre>
+                </details>
               )}
               <button
                 onClick={triggerMerge}
@@ -290,16 +322,37 @@ export default function TrainingPage() {
             {jobHistory.map(j => (
               <div
                 key={j.job_id}
-                className="flex items-center gap-3 p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm"
+                className="p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm"
               >
-                <StatusDot status={j.status} />
-                <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
-                <span className="flex-1 text-gray-300 truncate">{j.filename ?? 'unknown'}</span>
-                <span className="text-xs text-gray-500 capitalize">{j.status.replace('_', ' ')}</span>
-                {j.created_at && (
-                  <span className="text-xs text-gray-600 shrink-0">
-                    {new Date(j.created_at).toLocaleString()}
+                <div className="flex items-center gap-3">
+                  <StatusDot status={j.status} />
+                  <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
+                  <span className="flex-1 text-gray-300 truncate">
+                    {j.model_name ? (
+                      <span className="font-medium text-indigo-300">{j.model_name}</span>
+                    ) : null}
+                    {j.model_name && j.filename ? <span className="text-gray-600 mx-1">·</span> : null}
+                    {j.filename ?? 'unknown'}
                   </span>
+                  <span className="text-xs text-gray-500 capitalize shrink-0">{j.status.replace('_', ' ')}</span>
+                  {j.created_at && (
+                    <span className="text-xs text-gray-600 shrink-0">
+                      {new Date(j.created_at).toLocaleString()}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => deleteJob(j.job_id)}
+                    title="Delete job"
+                    className="text-gray-600 hover:text-red-400 transition-colors shrink-0 text-base leading-none"
+                  >
+                    🗑
+                  </button>
+                </div>
+                {j.error && (
+                  <details className="mt-2">
+                    <summary className="text-xs text-red-400 cursor-pointer select-none">⚠ Error (click to expand)</summary>
+                    <pre className="mt-1.5 p-2 bg-red-950 border border-red-900 rounded-lg text-red-300 text-xs overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{j.error}</pre>
+                  </details>
                 )}
               </div>
             ))}
