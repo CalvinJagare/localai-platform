@@ -154,10 +154,17 @@ class ChatRequest(BaseModel):
 class ProfileCreate(BaseModel):
     display_name: str
     color: str = "indigo"
+    base_profile_id: str | None = None
 
 
 class ProfileUpdate(BaseModel):
-    display_name: str
+    display_name: str | None = None
+    base_profile_id: str | None = None
+
+
+class DatasetFetchRequest(BaseModel):
+    url: str
+    filename: str
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +177,11 @@ def _format_record(record: dict, tokenizer) -> str:
         return tokenizer.apply_chat_template(record["messages"], tokenize=False)
     if "instruction" in record:
         text = f"### Instruction:\n{record['instruction']}\n"
-        if record.get("input"):
-            text += f"### Input:\n{record['input']}\n"
-        text += f"### Response:\n{record['output']}"
+        ctx = record.get("input") or record.get("context")
+        if ctx:
+            text += f"### Input:\n{ctx}\n"
+        output = record.get("output") or record.get("response", "")
+        text += f"### Response:\n{output}"
         return text
     return record.get("text", json.dumps(record))
 
@@ -181,6 +190,7 @@ def run_training(job_id: str, data_path: Path) -> None:
     """
     Blocking function executed in FastAPI's threadpool via BackgroundTasks.
     Loads Phi-3-mini with Unsloth, fine-tunes with QLoRA, saves the adapter.
+    If base_model_override is set on the job, trains on top of that model instead.
     """
     _update_job(job_id, status="training")
     output_dir = MODELS_DIR / job_id
@@ -194,9 +204,15 @@ def run_training(job_id: str, data_path: Path) -> None:
         from transformers import TrainingArguments, TrainerCallback
         from trl import SFTTrainer
 
+        with _jobs_lock:
+            base_model_override = jobs[job_id].get("base_model_override")
+
+        base_model = base_model_override or "unsloth/Phi-3-mini-4k-instruct"
+        print(f"[train] base_model: {base_model}")
+
         # -- Load base model with 4-bit quantisation --------------------------
         model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name="unsloth/Phi-3-mini-4k-instruct",
+            model_name=base_model,
             max_seq_length=2048,
             load_in_4bit=True,
         )
@@ -309,6 +325,8 @@ def run_merge(job_id: str) -> None:
     print(f"[merge] gguf_path:     {gguf_path}")
     print(f"[merge] model_name:    {model_name}  (profile_id: {profile_id})")
 
+    base_model_override = job_snapshot.get("base_model_override")
+
     if not adapter_dir.exists():
         _update_job(job_id, status="merge_failed",
                     error=f"Adapter directory not found: {adapter_dir}")
@@ -322,22 +340,27 @@ def run_merge(job_id: str) -> None:
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        # Resolve the base model to its absolute snapshot path on disk so we
-        # never pass a repo-ID string through transformers' cache lookup
-        # (which can hit a NoneType.endswith error on certain cached metadata).
-        snapshots_dir = (
-            Path(os.environ["HF_HOME"])
-            / "hub"
-            / "models--unsloth--Phi-3-mini-4k-instruct"
-            / "snapshots"
-        )
-        if not snapshots_dir.exists():
-            raise RuntimeError(f"Base model cache not found at {snapshots_dir}")
-        snapshots = sorted(snapshots_dir.iterdir())
-        if not snapshots:
-            raise RuntimeError(f"No snapshots in {snapshots_dir}")
-        base_model_path = str(snapshots[-1])
-        print(f"[merge] base_model_path: {base_model_path}")
+        # Use the same base the training job started from
+        if base_model_override and Path(base_model_override).exists():
+            base_model_path = base_model_override
+            print(f"[merge] continuing from: {base_model_path}")
+        else:
+            # Resolve the base model to its absolute snapshot path on disk so we
+            # never pass a repo-ID string through transformers' cache lookup
+            # (which can hit a NoneType.endswith error on certain cached metadata).
+            snapshots_dir = (
+                Path(os.environ["HF_HOME"])
+                / "hub"
+                / "models--unsloth--Phi-3-mini-4k-instruct"
+                / "snapshots"
+            )
+            if not snapshots_dir.exists():
+                raise RuntimeError(f"Base model cache not found at {snapshots_dir}")
+            snapshots = sorted(snapshots_dir.iterdir())
+            if not snapshots:
+                raise RuntimeError(f"No snapshots in {snapshots_dir}")
+            base_model_path = str(snapshots[-1])
+            print(f"[merge] base_model_path: {base_model_path}")
 
         tokenizer = AutoTokenizer.from_pretrained(
             str(adapter_dir),
@@ -433,6 +456,7 @@ async def train(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     profile_id: str = Form(""),
+    start_fresh: bool = Form(False),
 ):
     """Save the uploaded .jsonl file then kick off a background training job."""
     if not file.filename or not file.filename.endswith(".jsonl"):
@@ -446,6 +470,36 @@ async def train(
         if not resolved_profile_id:
             resolved_profile_id = _get_default_profile_id() or ""
         model_name = profiles[resolved_profile_id]["slug"] if resolved_profile_id in profiles else "nexus"
+
+    # Determine base_model_override — priority: own model > base profile > Phi-3-mini
+    base_model_override: str | None = None
+    if not start_fresh and resolved_profile_id:
+        with _jobs_lock:
+            merged_jobs = [
+                (k, v) for k, v in jobs.items()
+                if v.get("profile_id") == resolved_profile_id and v.get("status") == "merged"
+            ]
+        if merged_jobs:
+            latest_job_id = max(merged_jobs, key=lambda x: x[1].get("created_at", ""))[0]
+            candidate = MODELS_DIR / latest_job_id / "merged_hf"
+            if candidate.exists():
+                base_model_override = str(candidate)
+
+    # Fall back to the profile's designated base profile if no own model
+    if base_model_override is None and resolved_profile_id:
+        with _profiles_lock:
+            base_profile_id = profiles.get(resolved_profile_id, {}).get("base_profile_id")
+        if base_profile_id:
+            with _jobs_lock:
+                base_merged = [
+                    (k, v) for k, v in jobs.items()
+                    if v.get("profile_id") == base_profile_id and v.get("status") == "merged"
+                ]
+            if base_merged:
+                latest_base = max(base_merged, key=lambda x: x[1].get("created_at", ""))[0]
+                candidate = MODELS_DIR / latest_base / "merged_hf"
+                if candidate.exists():
+                    base_model_override = str(candidate)
 
     job_id = str(uuid.uuid4())
     dest = TRAINING_DIR / f"{job_id}_{file.filename}"
@@ -461,6 +515,7 @@ async def train(
             "filename": file.filename,
             "model_name": model_name,
             "profile_id": resolved_profile_id,
+            "base_model_override": base_model_override,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_jobs()
@@ -471,6 +526,7 @@ async def train(
         "filename": file.filename,
         "size_bytes": len(contents),
         "status": "queued",
+        "base_model_override": base_model_override,
     }
 
 
@@ -562,7 +618,12 @@ async def list_profiles():
     result = []
     for pid, p in profiles_snapshot.items():
         job_count = sum(1 for j in jobs_snapshot.values() if j.get("profile_id") == pid)
-        result.append({"id": pid, **p, "job_count": job_count})
+        result.append({
+            "id": pid,
+            **p,
+            "job_count": job_count,
+            "base_profile_id": p.get("base_profile_id"),
+        })
     result.sort(key=lambda p: p.get("created_at", ""))
     return result
 
@@ -578,12 +639,15 @@ async def create_profile(body: ProfileCreate):
         while slug in existing_slugs:
             slug = f"{base_slug}-{n}"
             n += 1
+        if body.base_profile_id and body.base_profile_id not in profiles:
+            raise HTTPException(status_code=400, detail="Base profile not found.")
         pid = str(uuid.uuid4())
         profiles[pid] = {
             "slug": slug,
             "display_name": body.display_name,
             "color": body.color,
             "current_model": None,
+            "base_profile_id": body.base_profile_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _save_profiles()
@@ -592,11 +656,19 @@ async def create_profile(body: ProfileCreate):
 
 @app.patch("/profiles/{profile_id}")
 async def update_profile(profile_id: str, body: ProfileUpdate):
-    """Rename a profile's display name. Slug is immutable."""
+    """Update a profile's display name and/or base profile. Slug is immutable."""
     with _profiles_lock:
         if profile_id not in profiles:
             raise HTTPException(status_code=404, detail="Profile not found.")
-        profiles[profile_id]["display_name"] = body.display_name
+        updated = body.model_fields_set
+        if "display_name" in updated and body.display_name:
+            profiles[profile_id]["display_name"] = body.display_name
+        if "base_profile_id" in updated:
+            if body.base_profile_id and body.base_profile_id not in profiles:
+                raise HTTPException(status_code=400, detail="Base profile not found.")
+            if body.base_profile_id == profile_id:
+                raise HTTPException(status_code=400, detail="A profile cannot be its own base.")
+            profiles[profile_id]["base_profile_id"] = body.base_profile_id
         _save_profiles()
         return {"id": profile_id, **profiles[profile_id]}
 
@@ -674,6 +746,41 @@ async def delete_data_file(filename: str):
         raise HTTPException(status_code=404, detail="File not found.")
     path.unlink()
     return {"deleted": safe}
+
+
+@app.post("/data/fetch")
+async def fetch_dataset(req: DatasetFetchRequest):
+    """Download a dataset from a URL, auto-convert JSON arrays to JSONL, save to training dir."""
+    safe_name = Path(req.filename).name
+    if not safe_name.endswith(".jsonl"):
+        safe_name = safe_name.rsplit(".", 1)[0] + ".jsonl"
+    dest = TRAINING_DIR / safe_name
+
+    try:
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            resp = await client.get(req.url)
+            resp.raise_for_status()
+            content = resp.content
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Download failed: {exc}")
+
+    # Auto-convert JSON arrays to JSONL
+    try:
+        data = json.loads(content)
+        if isinstance(data, list):
+            lines = [json.dumps(item) for item in data]
+            content = ("\n".join(lines) + "\n").encode()
+    except (json.JSONDecodeError, ValueError):
+        pass  # already JSONL, use as-is
+
+    dest.write_bytes(content)
+    line_count = sum(1 for line in dest.open() if line.strip())
+
+    return {
+        "filename": safe_name,
+        "size_bytes": len(content),
+        "line_count": line_count,
+    }
 
 
 # ---------------------------------------------------------------------------

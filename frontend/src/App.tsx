@@ -19,6 +19,7 @@ export interface Profile {
   display_name: string
   color: ProfileColor
   current_model: string | null
+  base_profile_id: string | null
   job_count: number
   created_at: string
 }
@@ -35,6 +36,11 @@ export default function App() {
     () => localStorage.getItem('selected_profile') ?? ''
   )
 
+  const selectProfile = (id: string) => {
+    setSelectedProfileId(id)
+    localStorage.setItem('selected_profile', id)
+  }
+
   // Load profiles once backend is ready
   useEffect(() => {
     if (phase !== 'ready') return
@@ -47,11 +53,6 @@ export default function App() {
       })
       .catch(() => {})
   }, [phase])
-
-  const selectProfile = (id: string) => {
-    setSelectedProfileId(id)
-    localStorage.setItem('selected_profile', id)
-  }
 
   const selectedProfile = profiles.find(p => p.id === selectedProfileId) ?? null
 
@@ -112,6 +113,7 @@ export default function App() {
         {page === 'training'  && (
           <TrainingPage
             profile={selectedProfile}
+            profiles={profiles}
             onProfileUpdate={(updated) =>
               setProfiles(ps => ps.map(p => p.id === updated.id ? updated : p))
             }

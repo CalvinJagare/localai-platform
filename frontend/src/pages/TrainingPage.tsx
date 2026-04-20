@@ -30,6 +30,7 @@ interface UploadResult {
   filename: string
   size_bytes: number
   status: JobStatus
+  base_model_override?: string | null
 }
 
 interface StatusResult {
@@ -119,17 +120,19 @@ async function combineFiles(items: SelectedFile[]): Promise<File> {
 
 interface Props {
   profile: Profile | null
+  profiles?: Profile[]
   onProfileUpdate: (p: Profile) => void
 }
 
-export default function TrainingPage({ profile, onProfileUpdate }: Props) {
-  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
-  const [dragging, setDragging]           = useState(false)
-  const [uploading, setUploading]         = useState(false)
-  const [job, setJob]                     = useState<UploadResult | null>(null)
-  const [jobStatus, setJobStatus]         = useState<StatusResult | null>(null)
-  const [error, setError]                 = useState<string | null>(null)
-  const [jobHistory, setJobHistory]       = useState<JobRecord[]>([])
+export default function TrainingPage({ profile, profiles = [], onProfileUpdate }: Props) {
+  const [selectedFiles, setSelectedFiles]       = useState<SelectedFile[]>([])
+  const [dragging, setDragging]                 = useState(false)
+  const [uploading, setUploading]               = useState(false)
+  const [job, setJob]                           = useState<UploadResult | null>(null)
+  const [jobStatus, setJobStatus]               = useState<StatusResult | null>(null)
+  const [error, setError]                       = useState<string | null>(null)
+  const [jobHistory, setJobHistory]             = useState<JobRecord[]>([])
+  const [continueTraining, setContinueTraining] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -144,6 +147,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
 
   useEffect(() => {
     setJob(null); setJobStatus(null); setError(null); setSelectedFiles([])
+    setContinueTraining(true)
     fetchHistory()
   }, [profile?.id])
 
@@ -230,6 +234,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
       const form = new FormData()
       form.append('file', combined)
       form.append('profile_id', profile.id)
+      form.append('start_fresh', continueTraining ? 'false' : 'true')
       const resp = await fetch(`${API}/train`, { method: 'POST', body: form })
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       const result: UploadResult = await resp.json()
@@ -292,14 +297,46 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
 
-      {/* Active profile badge */}
-      <div className="mb-6 inline-flex items-center gap-2 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm">
-        <span className="text-gray-400">Training for:</span>
-        <span className="font-medium text-gray-200">{profile.display_name}</span>
-        {profile.current_model && (
-          <span className="text-xs text-gray-500 font-mono">({profile.current_model})</span>
-        )}
+      {/* Active profile badge + inheritance chain */}
+      <div className="mb-4 flex items-center flex-wrap gap-2">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm">
+          <span className="text-gray-400">Training for:</span>
+          <span className="font-medium text-gray-200">{profile.display_name}</span>
+          {profile.current_model && (
+            <span className="text-xs text-gray-500 font-mono">({profile.current_model})</span>
+          )}
+        </div>
+        {profile.base_profile_id && (() => {
+          const base = profiles.find(p => p.id === profile.base_profile_id)
+          return base ? (
+            <span className="text-xs text-gray-500 flex items-center gap-1">
+              inherits from <span className="text-gray-400 font-medium">{base.display_name}</span>
+            </span>
+          ) : null
+        })()}
       </div>
+
+      {/* Continue vs fresh toggle — only shown when profile already has a model */}
+      {profile.current_model && (
+        <div className="mb-6 p-3 bg-gray-900 border border-gray-700 rounded-xl flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-gray-200">
+              {continueTraining ? 'Continue from existing model' : 'Start fresh from Phi-3-mini'}
+            </p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {continueTraining
+                ? <>Builds on <span className="font-mono text-gray-400">{profile.current_model}</span> — include previous training data to avoid forgetting</>
+                : 'Resets to base model — previous fine-tuning is discarded'}
+            </p>
+          </div>
+          <button
+            onClick={() => setContinueTraining(c => !c)}
+            className={`relative flex-shrink-0 w-10 h-6 rounded-full transition-colors ${continueTraining ? 'bg-indigo-600' : 'bg-gray-700'}`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${continueTraining ? 'translate-x-4' : 'translate-x-0'}`} />
+          </button>
+        </div>
+      )}
 
       {/* Drop zone */}
       <div
@@ -442,7 +479,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
           <div className="border-t border-gray-800 pt-3 space-y-1.5">
             <Row label="File"       value={job.filename} />
             <Row label="Size"       value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />
-            <Row label="Base model" value="unsloth/Phi-3-mini-4k-instruct" />
+            <Row label="Base model" value={job.base_model_override ? `${profile.display_name} (continued)` : 'Phi-3-mini-4k-instruct (fresh)'} />
           </div>
         </div>
       )}
