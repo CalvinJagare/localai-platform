@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-
-const API = 'http://localhost:8000'
+import { API } from '../lib/server'
+import { useToast } from '../components/Toast'
 
 interface DataFile {
   filename: string
@@ -226,10 +226,11 @@ function formatSize(bytes: number): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function DataPage() {
+export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) {
   const [files, setFiles] = useState<DataFile[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const { addToast } = useToast()
   const [preview, setPreview] = useState<{ group: FileGroup; records: object[] } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
 
@@ -306,10 +307,13 @@ export default function DataPage() {
       })
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       setDownloading(prev => ({ ...prev, [dataset.id]: 'done' }))
+      addToast('success', `${dataset.name} downloaded`)
+      onDataAdded?.()
       fetchFiles()
     } catch (err) {
       setDownloading(prev => ({ ...prev, [dataset.id]: 'error' }))
       setDownloadError(`Failed to download ${dataset.name}: ${String(err)}`)
+      addToast('error', `Failed to download ${dataset.name}`)
     }
   }
 
@@ -327,9 +331,12 @@ export default function DataPage() {
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       setCustomUrl('')
       setCustomFilename('')
+      addToast('success', 'Dataset downloaded')
+      onDataAdded?.()
       fetchFiles()
     } catch (err) {
       setDownloadError(`Download failed: ${String(err)}`)
+      addToast('error', 'Download failed')
     } finally {
       setCustomDownloading(false)
     }

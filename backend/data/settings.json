@@ -1,0 +1,6 @@
+{
+  "DATA_ROOT": "/mnt/d/localai-platform/backend/data",
+  "HF_CACHE_PATH": "/mnt/d/hf-cache",
+  "OLLAMA_MODELS_PATH": "/mnt/d/ollama-models",
+  "LLAMA_CPP_PATH": "/mnt/d/llama.cpp"
+}

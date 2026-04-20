@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { API, type Profile } from '../App'
+import { API } from '../lib/server'
+import type { Profile } from '../App'
 
 interface InstructionFile {
   filename: string

@@ -2,6 +2,7 @@ import ast
 import operator
 import os
 import re
+import sys
 import uuid
 import json
 import glob
@@ -20,29 +21,103 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["HF_HOME"] = "/mnt/d/hf-cache"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-if not os.environ.get("OLLAMA_MODELS"):
-    os.environ["OLLAMA_MODELS"] = "/mnt/d/ollama-models"
-Path(os.environ["OLLAMA_MODELS"]).mkdir(parents=True, exist_ok=True)
+# ---------------------------------------------------------------------------
+# Bootstrap: settings.json is always at this fixed location so we can read
+# path overrides before any other constants are defined.
+# ---------------------------------------------------------------------------
+SETTINGS_FILE = Path(__file__).parent / "data" / "settings.json"
+SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+def _read_startup_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except Exception:
+        return {}
+
+_startup = _read_startup_settings()
+
+# Configurable paths — read from settings.json, fall back to hardcoded defaults
+DATA_ROOT          = Path(_startup.get("DATA_ROOT",          Path(__file__).parent / "data"))
+HF_CACHE_PATH      = Path(_startup.get("HF_CACHE_PATH",      "/mnt/d/hf-cache"))
+OLLAMA_MODELS_PATH = Path(_startup.get("OLLAMA_MODELS_PATH", "/mnt/d/ollama-models"))
+LLAMA_CPP_PATH     = Path(_startup.get("LLAMA_CPP_PATH",     "/mnt/d/llama.cpp"))
+
+# Apply path settings to environment
+os.environ["HF_HOME"]      = str(HF_CACHE_PATH)
+os.environ["OLLAMA_MODELS"] = str(OLLAMA_MODELS_PATH)
+OLLAMA_MODELS_PATH.mkdir(parents=True, exist_ok=True)
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-LLAMA_CPP_CONVERT = Path("/mnt/d/llama.cpp/convert_hf_to_gguf.py")
+LLAMA_CPP_CONVERT = LLAMA_CPP_PATH / "convert_hf_to_gguf.py"
 PYTHON = "/usr/bin/python3"
-TRAINING_DIR = Path(__file__).parent / "data" / "training"
-MODELS_DIR = Path(__file__).parent / "data" / "models"
-JOBS_FILE = Path(__file__).parent / "data" / "jobs.json"
-PROFILES_FILE = Path(__file__).parent / "data" / "profiles.json"
-INSTRUCTIONS_DIR = Path(__file__).parent / "data" / "instructions"
-SETTINGS_FILE    = Path(__file__).parent / "data" / "settings.json"
-RAG_DIR          = Path(__file__).parent / "data" / "rag"
+
+# Data paths — all rooted at DATA_ROOT
+TRAINING_DIR     = DATA_ROOT / "training"
+MODELS_DIR       = DATA_ROOT / "models"
+JOBS_FILE        = DATA_ROOT / "jobs.json"
+PROFILES_FILE    = DATA_ROOT / "profiles.json"
+INSTRUCTIONS_DIR = DATA_ROOT / "instructions"
+RAG_DIR          = DATA_ROOT / "rag"
+
+SETUP_FILE = DATA_ROOT / "setup.json"
+
 TRAINING_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 INSTRUCTIONS_DIR.mkdir(parents=True, exist_ok=True)
 RAG_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="LocalAI Platform")
+# ---------------------------------------------------------------------------
+# Supported base models — used by setup wizard and training pipeline
+# ---------------------------------------------------------------------------
+
+SUPPORTED_MODELS: dict[str, dict] = {
+    "phi3-mini": {
+        "id":      "unsloth/Phi-3-mini-4k-instruct",
+        "name":    "Phi-3 Mini 3.8B",
+        "vram_gb": 4,
+        "size_gb": 2.2,
+    },
+    "llama32-3b": {
+        "id":      "unsloth/Llama-3.2-3B-Instruct",
+        "name":    "Llama 3.2 3B",
+        "vram_gb": 4,
+        "size_gb": 2.0,
+    },
+    "mistral-7b": {
+        "id":      "unsloth/mistral-7b-instruct-v0.3",
+        "name":    "Mistral 7B",
+        "vram_gb": 8,
+        "size_gb": 4.1,
+    },
+    "llama31-8b": {
+        "id":      "unsloth/Meta-Llama-3.1-8B-Instruct",
+        "name":    "Llama 3.1 8B",
+        "vram_gb": 8,
+        "size_gb": 4.7,
+    },
+}
+
+def _hf_cache_dir_name(model_id: str) -> str:
+    """Convert a HuggingFace repo ID to its local cache directory name."""
+    return "models--" + model_id.replace("/", "--")
+
+def _load_setup() -> dict:
+    try:
+        return json.loads(SETUP_FILE.read_text())
+    except Exception:
+        return {}
+
+def _save_setup(data: dict) -> None:
+    tmp = SETUP_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(SETUP_FILE)
+
+# Read chosen base model from setup.json; default to Phi-3 Mini
+BASE_MODEL: str = _load_setup().get("base_model", SUPPORTED_MODELS["phi3-mini"]["id"])
+
+app = FastAPI(title="skAIler")
 
 app.add_middleware(
     CORSMiddleware,
@@ -178,6 +253,9 @@ _rag_lock = threading.Lock()
 _rag_chunks: dict[str, list[str]] = {}   # profile_id → flat chunk list (loaded lazily)
 _rag_bm25:   dict[str, object]    = {}   # profile_id → BM25Okapi (invalidated on change)
 
+# In-memory only — loss values captured during active training, not persisted
+_job_loss_history: dict[str, list[float]] = {}
+
 
 def _rag_manifest_path(profile_id: str) -> Path:
     return RAG_DIR / profile_id / "manifest.json"
@@ -266,19 +344,34 @@ def _get_bm25(profile_id: str):
     return _rag_bm25.get(profile_id)
 
 
-def _retrieve_context(profile_id: str, query: str, top_k: int = 3) -> str:
-    """Return top-K BM25 chunks for query, or empty string if no docs indexed."""
+def _retrieve_context(profile_id: str, query: str, top_k: int = 3) -> tuple[str, list[str]]:
+    """Return (context_text, source_filenames) for top-K BM25 chunks."""
     if not query.strip():
-        return ""
+        return "", []
     with _rag_lock:
         index = _get_bm25(profile_id)
         if index is None:
-            return ""
+            return "", []
         chunks = _rag_chunks.get(profile_id, [])
         scores = index.get_scores(query.lower().split())
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
-        selected = [chunks[i] for i in top_indices if scores[i] > 0]
-    return "\n\n---\n\n".join(selected)
+        selected_indices = [i for i in top_indices if scores[i] > 0]
+        selected_chunks = [chunks[i] for i in selected_indices]
+
+    if not selected_chunks:
+        return "", []
+
+    # Map chunk indices back to document filenames
+    manifest = _load_rag_manifest(profile_id)
+    sources: list[str] = []
+    for idx in selected_indices:
+        for doc in manifest:
+            if doc["chunk_start"] <= idx < doc["chunk_start"] + doc["chunk_count"]:
+                if doc["filename"] not in sources:
+                    sources.append(doc["filename"])
+                break
+
+    return "\n\n---\n\n".join(selected_chunks), sources
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +664,7 @@ def _format_record(record: dict, tokenizer) -> str:
 def run_training(job_id: str, data_path: Path) -> None:
     """
     Blocking function executed in FastAPI's threadpool via BackgroundTasks.
-    Loads Phi-3-mini with Unsloth, fine-tunes with QLoRA, saves the adapter.
+    Loads the configured base model with Unsloth, fine-tunes with QLoRA, saves the adapter.
     If base_model_override is set on the job, trains on top of that model instead.
     """
     _update_job(job_id, status="training")
@@ -589,7 +682,7 @@ def run_training(job_id: str, data_path: Path) -> None:
         with _jobs_lock:
             base_model_override = jobs[job_id].get("base_model_override")
 
-        base_model = base_model_override or "unsloth/Phi-3-mini-4k-instruct"
+        base_model = base_model_override or BASE_MODEL
         print(f"[train] base_model: {base_model}")
 
         # -- Load base model with 4-bit quantisation --------------------------
@@ -640,6 +733,11 @@ def run_training(job_id: str, data_path: Path) -> None:
                     pct = min(int(state.global_step / state.max_steps * 100), 99)
                     if pct >= last_pct[0] + 5:
                         _update_job(job_id, progress=pct)
+                        # Capture latest loss value (in-memory only)
+                        if state.log_history:
+                            loss_vals = [h["loss"] for h in state.log_history if "loss" in h]
+                            if loss_vals:
+                                _job_loss_history.setdefault(job_id, []).append(round(loss_vals[-1], 4))
                         last_pct[0] = pct
 
         with _jobs_lock:
@@ -719,7 +817,7 @@ def run_merge(job_id: str) -> None:
 
     try:
         os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["HF_HOME"] = "/mnt/d/hf-cache"
+        os.environ["HF_HOME"] = str(HF_CACHE_PATH)
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
         from peft import PeftModel
@@ -736,7 +834,7 @@ def run_merge(job_id: str) -> None:
             snapshots_dir = (
                 Path(os.environ["HF_HOME"])
                 / "hub"
-                / "models--unsloth--Phi-3-mini-4k-instruct"
+                / _hf_cache_dir_name(BASE_MODEL)
                 / "snapshots"
             )
             if not snapshots_dir.exists():
@@ -747,6 +845,7 @@ def run_merge(job_id: str) -> None:
             base_model_path = str(snapshots[-1])
             print(f"[merge] base_model_path: {base_model_path}")
 
+        _update_job(job_id, merge_step="Loading base model and LoRA adapter…")
         tokenizer = AutoTokenizer.from_pretrained(
             str(adapter_dir),
             local_files_only=True,
@@ -758,6 +857,7 @@ def run_merge(job_id: str) -> None:
             device_map="cpu",
             local_files_only=True,
         )
+        _update_job(job_id, merge_step="Merging LoRA weights into base model…")
         model = PeftModel.from_pretrained(model, str(adapter_dir))
         model = model.merge_and_unload()
 
@@ -768,6 +868,7 @@ def run_merge(job_id: str) -> None:
         tokenizer.save_pretrained(str(merged_hf_dir))
         del model
 
+        _update_job(job_id, merge_step="Converting to GGUF (this takes a few minutes)…")
         # Convert merged HF model to GGUF via llama.cpp
         gguf_dir.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -779,6 +880,7 @@ def run_merge(job_id: str) -> None:
         if result.returncode != 0:
             raise RuntimeError(f"GGUF conversion failed:\n{result.stderr or result.stdout}")
 
+        _update_job(job_id, merge_step="Registering model in Ollama…")
         # Register model in Ollama via CLI
         modelfile_path.write_text(f"FROM {gguf_path}\n")
         result = subprocess.run(
@@ -823,9 +925,10 @@ async def chat(req: ChatRequest):
                     pass
 
     # Inject RAG context for the last user query
+    rag_sources: list[str] = []
     if req.profile_id:
         last_user = next((m["content"] for m in reversed(req.messages) if m["role"] == "user"), "")
-        rag_context = _retrieve_context(req.profile_id, last_user)
+        rag_context, rag_sources = _retrieve_context(req.profile_id, last_user)
         if rag_context:
             system_parts.append(f"Relevant document excerpts (use these to answer if applicable):\n\n{rag_context}")
 
@@ -848,6 +951,9 @@ async def chat(req: ChatRequest):
 
     async def generate():
         current_messages = list(messages)
+
+        if rag_sources:
+            yield f"data: {json.dumps({'type': 'rag_sources', 'sources': rag_sources})}\n\n"
 
         async with httpx.AsyncClient(timeout=120) as client:
             if tools:
@@ -922,7 +1028,7 @@ async def chat(req: ChatRequest):
 
 
 def _resolve_base_model(resolved_profile_id: str, start_fresh: bool) -> str | None:
-    """Return the best base model path for a new training job, or None for Phi-3-mini."""
+    """Return the best base model path for a new training job, or None to use BASE_MODEL."""
     base_model_override: str | None = None
     if not start_fresh and resolved_profile_id:
         with _jobs_lock:
@@ -1063,6 +1169,8 @@ async def train_status(job_id: str):
         "progress": job["progress"],
         "error": job.get("error"),
         "ollama_model": job.get("ollama_model"),
+        "merge_step": job.get("merge_step"),
+        "loss_history": _job_loss_history.get(job_id, []),
     }
 
 
@@ -1545,14 +1653,19 @@ async def list_tools():
     return result
 
 
+_PATH_KEYS = {"DATA_ROOT", "HF_CACHE_PATH", "OLLAMA_MODELS_PATH", "LLAMA_CPP_PATH"}
+
 @app.get("/settings")
 async def get_settings():
-    """Return settings with API key values masked."""
+    """Return settings — API keys are masked, path keys are returned as-is."""
     with _settings_lock:
         data = _load_settings()
     masked = {}
     for k, v in data.items():
-        masked[k] = ("•" * max(0, len(v) - 4) + v[-4:]) if v and len(v) > 4 else v
+        if k in _PATH_KEYS:
+            masked[k] = v
+        else:
+            masked[k] = ("•" * max(0, len(v) - 4) + v[-4:]) if v and len(v) > 4 else v
     return masked
 
 
@@ -1570,21 +1683,87 @@ async def update_settings(body: SettingsUpdate):
     return {"updated": [k for k, v in body.data.items() if v and not v.startswith("•")]}
 
 
+@app.get("/config")
+async def get_config():
+    """Return the currently active runtime paths (reflect what's running now)."""
+    return {
+        "DATA_ROOT":          str(DATA_ROOT),
+        "HF_CACHE_PATH":      str(HF_CACHE_PATH),
+        "OLLAMA_MODELS_PATH": str(OLLAMA_MODELS_PATH),
+        "LLAMA_CPP_PATH":     str(LLAMA_CPP_PATH),
+    }
+
+
+@app.post("/restart")
+async def restart_backend(background_tasks: BackgroundTasks):
+    """Replace the running process with a fresh copy — applies saved settings."""
+    import time
+
+    def _do_restart():
+        time.sleep(0.4)  # let the response flush before we replace the process
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    background_tasks.add_task(_do_restart)
+    return {"message": "Restarting…"}
+
+
 # ---------------------------------------------------------------------------
 # Misc routes
 # ---------------------------------------------------------------------------
 
 @app.get("/models")
 async def models():
-    """Return the list of models available in Ollama."""
+    """Return models available in Ollama with size and associated profile."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{OLLAMA_BASE}/api/tags")
             resp.raise_for_status()
-            data = resp.json()
-            return {"models": [m["name"] for m in data.get("models", [])]}
+            raw = resp.json().get("models", [])
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {exc}")
+
+    with _profiles_lock:
+        profiles_snap = dict(profiles)
+
+    # Build a map: model_name → profile
+    model_to_profile: dict[str, dict] = {}
+    for pid, p in profiles_snap.items():
+        if p.get("current_model"):
+            model_to_profile[p["current_model"]] = {"id": pid, "display_name": p["display_name"], "color": p["color"]}
+
+    result = []
+    for m in raw:
+        name = m["name"]
+        result.append({
+            "name": name,
+            "size_bytes": m.get("size", 0),
+            "modified_at": m.get("modified_at", ""),
+            "profile": model_to_profile.get(name),
+        })
+    return result
+
+
+@app.delete("/models/{model_name:path}")
+async def delete_model(model_name: str):
+    """Remove a model from Ollama and clear it from any profile that references it."""
+    result = subprocess.run(
+        ["/usr/local/bin/ollama", "rm", model_name],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr.strip() or "Failed to delete model")
+
+    # Clear from any profile that was using this model
+    with _profiles_lock:
+        changed = False
+        for p in profiles.values():
+            if p.get("current_model") == model_name:
+                p["current_model"] = None
+                changed = True
+        if changed:
+            _save_profiles()
+
+    return {"deleted": model_name}
 
 
 @app.get("/health")
@@ -1626,3 +1805,108 @@ async def health():
         },
         "gpu": gpu_info,
     }
+
+
+# ---------------------------------------------------------------------------
+# Setup endpoints — used by the setup wizard on first launch
+# ---------------------------------------------------------------------------
+
+import queue as _queue_mod
+
+
+class DownloadModelRequest(BaseModel):
+    key: str  # one of the SUPPORTED_MODELS keys
+
+
+@app.get("/setup/status")
+async def setup_status():
+    """Return whether initial setup has been completed and which base model was chosen."""
+    data = _load_setup()
+    return {
+        "complete":   data.get("complete", False),
+        "mode":       data.get("mode", "local"),
+        "base_model": data.get("base_model", SUPPORTED_MODELS["phi3-mini"]["id"]),
+    }
+
+
+@app.get("/setup/models")
+async def setup_models():
+    """Return the list of supported base models with VRAM/size metadata."""
+    return [{"key": k, **v} for k, v in SUPPORTED_MODELS.items()]
+
+
+@app.get("/setup/disk-info")
+async def disk_info(path: str = str(DATA_ROOT)):
+    """Return free and total disk space for the given path."""
+    import shutil
+    try:
+        usage = shutil.disk_usage(path)
+        return {
+            "path":     path,
+            "free_gb":  round(usage.free  / 1e9, 1),
+            "total_gb": round(usage.total / 1e9, 1),
+            "used_gb":  round(usage.used  / 1e9, 1),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/setup/download-model")
+async def download_model(body: DownloadModelRequest):
+    """
+    Stream the download of a base model from HuggingFace as SSE progress events.
+    Temporarily disables HF_HUB_OFFLINE during download, then re-enables it.
+    Writes setup.json on completion.
+
+    # TODO v2: add POST /setup/cancel-download to interrupt and clean up partial downloads.
+    """
+    if body.key not in SUPPORTED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unknown model key: {body.key}")
+
+    model_info = SUPPORTED_MODELS[body.key]
+    model_id   = model_info["id"]
+    expected_bytes = int(model_info["size_gb"] * 1e9)
+
+    async def stream():
+        done_q: _queue_mod.Queue = _queue_mod.Queue()
+
+        def do_download():
+            # Temporarily allow HF downloads
+            os.environ.pop("HF_HUB_OFFLINE",       None)
+            os.environ.pop("TRANSFORMERS_OFFLINE",  None)
+            try:
+                from huggingface_hub import snapshot_download
+                snapshot_download(repo_id=model_id, cache_dir=str(HF_CACHE_PATH))
+                done_q.put(("done", None))
+            except Exception as exc:
+                done_q.put(("error", str(exc)))
+            finally:
+                # Always restore offline mode
+                os.environ["HF_HUB_OFFLINE"]      = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+        thread = threading.Thread(target=do_download, daemon=True)
+        thread.start()
+
+        cache_dir = HF_CACHE_PATH / "hub" / _hf_cache_dir_name(model_id)
+
+        while True:
+            try:
+                msg_type, msg = done_q.get(timeout=1.0)
+                if msg_type == "done":
+                    global BASE_MODEL
+                    BASE_MODEL = model_id
+                    _save_setup({"complete": True, "mode": "local", "base_model": model_id})
+                    yield f"data: {json.dumps({'type': 'done', 'model_id': model_id})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'message': msg})}\n\n"
+                break
+            except _queue_mod.Empty:
+                current_bytes = (
+                    sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
+                    if cache_dir.exists() else 0
+                )
+                pct = min(99, int(current_bytes / expected_bytes * 100)) if expected_bytes else 0
+                yield f"data: {json.dumps({'type': 'progress', 'pct': pct})}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")

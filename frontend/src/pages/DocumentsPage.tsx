@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { API, type Profile, type ProfileColor } from '../App'
+import { API } from '../lib/server'
+import type { Profile, ProfileColor } from '../App'
 
 const DOT: Record<ProfileColor, string> = {
   indigo:  'bg-indigo-500',

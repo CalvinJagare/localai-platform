@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import { API, type Profile } from '../App'
+import { API } from '../lib/server'
+import type { Profile } from '../App'
+import { useToast } from '../components/Toast'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +40,8 @@ interface StatusResult {
   progress: number
   error: string | null
   ollama_model?: string
+  merge_step?: string
+  loss_history?: number[]
 }
 
 interface JobRecord {
@@ -133,9 +137,11 @@ interface Props {
   profile: Profile | null
   profiles?: Profile[]
   onProfileUpdate: (p: Profile) => void
+  onDataAdded?: () => void
+  onTrainingStarted?: () => void
 }
 
-export default function TrainingPage({ profile, profiles = [], onProfileUpdate }: Props) {
+export default function TrainingPage({ profile, profiles = [], onProfileUpdate, onDataAdded, onTrainingStarted }: Props) {
   const [selectedFiles, setSelectedFiles]       = useState<SelectedFile[]>([])
   const [dragging, setDragging]                 = useState(false)
   const [uploading, setUploading]               = useState(false)
@@ -145,6 +151,8 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
   const [jobHistory, setJobHistory]             = useState<JobRecord[]>([])
   const [continueTraining, setContinueTraining] = useState(true)
   const [epochs, setEpochs]                     = useState(3)
+  const [autoMerge, setAutoMerge]               = useState(false)
+  const trainStartMsRef = useRef<number | null>(null)
 
   // Queue state
   const [queue, setQueue]             = useState<QueueItem[]>([])
@@ -156,6 +164,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
 
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { addToast } = useToast()
 
   async function fetchHistory() {
     if (!profile) return
@@ -177,12 +186,35 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
   useEffect(() => {
     setJob(null); setJobStatus(null); setError(null); setSelectedFiles([])
     setContinueTraining(true); setQueueRunning(false)
+    trainStartMsRef.current = null
     fetchHistory()
   }, [profile?.id])
 
   useEffect(() => {
     if (queueOpen) fetchDataFiles()
   }, [queueOpen])
+
+  // Track training start time for ETA
+  useEffect(() => {
+    if (jobStatus?.status === 'training' && trainStartMsRef.current === null) {
+      trainStartMsRef.current = Date.now()
+    }
+  }, [jobStatus?.status])
+
+  // Auto-merge when complete
+  useEffect(() => {
+    if (autoMerge && jobStatus?.status === 'complete' && job) {
+      triggerMerge()
+    }
+  }, [jobStatus?.status])
+
+  // Toast on terminal states
+  useEffect(() => {
+    if (jobStatus?.status === 'complete' && !autoMerge) addToast('success', 'Training complete — ready to merge')
+    if (jobStatus?.status === 'merged')                  addToast('success', `${profile?.display_name} is ready in Ollama`)
+    if (jobStatus?.status === 'failed')                  addToast('error', 'Training failed')
+    if (jobStatus?.status === 'merge_failed')            addToast('error', 'Merge failed')
+  }, [jobStatus?.status])
 
   // Update profile after merge
   useEffect(() => {
@@ -233,6 +265,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
     const incoming = Array.from(fileList).filter(f => f.name.endsWith('.jsonl'))
     if (incoming.length === 0) { setError('Only .jsonl files are accepted.'); return }
     setError(null)
+    onDataAdded?.()
     const newItems: SelectedFile[] = incoming.map(file => ({ id: randomId(), file, validation: null }))
     setSelectedFiles(prev => {
       const existing = new Set(prev.map(i => i.file.name))
@@ -272,6 +305,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
       setJob(result)
       setJobStatus({ status: result.status, progress: 0, error: null })
       setSelectedFiles([])
+      onTrainingStarted?.()
       fetchHistory()
     } catch (err) {
       setError(String(err))
@@ -349,6 +383,23 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
     }
   }
 
+  function getEtaText(): string | null {
+    if (!trainStartMsRef.current || !jobStatus || jobStatus.progress < 5) return null
+    const elapsedSec = (Date.now() - trainStartMsRef.current) / 1000
+    const totalEstSec = elapsedSec / (jobStatus.progress / 100)
+    const remainSec = totalEstSec - elapsedSec
+    if (remainSec < 60) return '< 1 min left'
+    return `~${Math.round(remainSec / 60)} min left`
+  }
+
+  function suggestedEpochs(validCount: number): string | null {
+    if (validCount === 0) return null
+    if (validCount < 200)   return `${validCount} examples is very small — consider 10 epochs`
+    if (validCount < 1000)  return `${validCount} examples — 5 epochs recommended`
+    if (validCount < 10000) return `${validCount} examples — 3 epochs recommended`
+    return `${validCount.toLocaleString()} examples — 1–2 epochs recommended to avoid overfitting`
+  }
+
   const isActive = jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
   const totalValid   = selectedFiles.reduce((n, i) => n + (i.validation?.valid ?? 0), 0)
   const allValidated = selectedFiles.length > 0 && selectedFiles.every(i => i.validation !== null)
@@ -413,23 +464,40 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
         </div>
       )}
 
-      {/* Epoch selector */}
-      <div className="mb-4 flex items-center gap-3">
-        <span className="text-xs text-gray-400 shrink-0">Epochs</span>
-        <div className="flex gap-1">
-          {EPOCH_OPTIONS.map(n => (
-            <button
-              key={n}
-              onClick={() => setEpochs(n)}
-              className={`w-9 h-7 text-xs font-medium rounded-lg transition-colors ${epochs === n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
-            >
-              {n}
-            </button>
-          ))}
+      {/* Epoch selector + auto-merge */}
+      <div className="mb-4 space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400 shrink-0">Epochs</span>
+          <div className="flex gap-1">
+            {EPOCH_OPTIONS.map(n => (
+              <button
+                key={n}
+                onClick={() => setEpochs(n)}
+                className={`w-9 h-7 text-xs font-medium rounded-lg transition-colors ${epochs === n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-600">
+            {epochs === 1 ? 'Fast pass' : epochs <= 3 ? 'Standard' : epochs <= 5 ? 'Thorough' : 'Deep — risk overfitting'}
+          </span>
         </div>
-        <span className="text-xs text-gray-600">
-          {epochs === 1 ? 'Fast, light pass' : epochs <= 3 ? 'Standard' : epochs <= 5 ? 'Thorough' : 'Very deep — risk overfitting'}
-        </span>
+        {allValidated && totalValid > 0 && suggestedEpochs(totalValid) && (
+          <p className="text-xs text-indigo-400/70 pl-16">{suggestedEpochs(totalValid)}</p>
+        )}
+        <div className="flex items-center gap-2 pl-16">
+          <input
+            id="auto-merge"
+            type="checkbox"
+            checked={autoMerge}
+            onChange={e => setAutoMerge(e.target.checked)}
+            className="accent-indigo-500"
+          />
+          <label htmlFor="auto-merge" className="text-xs text-gray-400 cursor-pointer select-none">
+            Auto-merge when training completes
+          </label>
+        </div>
       </div>
 
       {/* Drop zone */}
@@ -519,7 +587,12 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
             <div>
               <div className="flex justify-between text-xs text-gray-400 mb-1.5">
                 <span>{jobStatus.status === 'queued' ? 'Waiting to start…' : 'Training…'}</span>
-                <span>{jobStatus.progress}%</span>
+                <span className="flex items-center gap-2">
+                  {jobStatus.status === 'training' && getEtaText() && (
+                    <span className="text-gray-500">{getEtaText()}</span>
+                  )}
+                  <span>{jobStatus.progress}%</span>
+                </span>
               </div>
               <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
                 <div
@@ -527,6 +600,9 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
                   style={{ width: `${jobStatus.status === 'queued' ? 0 : jobStatus.progress}%` }}
                 />
               </div>
+              {jobStatus.loss_history && jobStatus.loss_history.length >= 2 && (
+                <LossSparkline losses={jobStatus.loss_history} />
+              )}
             </div>
           )}
 
@@ -546,7 +622,12 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
           )}
 
           {jobStatus.status === 'merging' && (
-            <div className="flex items-center gap-3 text-blue-300"><Spinner /><span>Merging model…</span></div>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-3 text-blue-300"><Spinner /><span>Merging model…</span></div>
+              {jobStatus.merge_step && (
+                <p className="text-xs text-gray-500 pl-7">{jobStatus.merge_step}</p>
+              )}
+            </div>
           )}
 
           {jobStatus.status === 'merged' && (
@@ -791,6 +872,32 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between">
       <span className="text-gray-400">{label}</span>
       <span className="text-gray-200">{value}</span>
+    </div>
+  )
+}
+
+function LossSparkline({ losses }: { losses: number[] }) {
+  const W = 120, H = 28
+  const max = Math.max(...losses)
+  const min = Math.min(...losses)
+  const range = max - min || 0.001
+  const pts = losses.map((l, i) => {
+    const x = (i / (losses.length - 1)) * W
+    const y = H - ((l - min) / range) * (H - 2) - 1
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  return (
+    <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+      <span>Loss</span>
+      <svg width={W} height={H} className="overflow-visible">
+        <polyline points={pts} fill="none" stroke="#818cf8" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+      <span className="font-mono">{losses[losses.length - 1].toFixed(3)}</span>
+      {losses.length > 1 && (
+        <span className={losses[losses.length - 1] < losses[0] ? 'text-green-500' : 'text-red-400'}>
+          {losses[losses.length - 1] < losses[0] ? '↓' : '↑'}
+        </span>
+      )}
     </div>
   )
 }

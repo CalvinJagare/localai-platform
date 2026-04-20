@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LocalAI",
+  "productName": "skAIler",
   "version": "0.1.0",
-  "identifier": "com.localai.platform",
+  "identifier": "com.skailer.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "LocalAI Platform",
+        "title": "skAIler",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

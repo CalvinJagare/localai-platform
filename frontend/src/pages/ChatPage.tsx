@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import { API, type Profile, type ProfileColor } from '../App'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { API } from '../lib/server'
+import type { Profile, ProfileColor } from '../App'
+import { useToast } from '../components/Toast'
 
 const TOOL_LABELS: Record<string, string> = {
   get_datetime: 'Date & Time',
@@ -29,30 +33,69 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   tools?: ToolActivity[]
+  sources?: string[]   // RAG document sources used
 }
 
 interface Props {
   profile: Profile | null
+  onMessageSent?: () => void
 }
 
-export default function ChatPage({ profile }: Props) {
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
-  const [streaming, setStreaming] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
+// ---------------------------------------------------------------------------
+// Markdown renderer — consistent dark-theme styling
+// ---------------------------------------------------------------------------
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function MdContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p:          (p: any) => <p className="mb-2 last:mb-0">{p.children}</p>,
+        ul:         (p: any) => <ul className="list-disc list-inside mb-2 space-y-0.5 pl-1">{p.children}</ul>,
+        ol:         (p: any) => <ol className="list-decimal list-inside mb-2 space-y-0.5 pl-1">{p.children}</ol>,
+        li:         (p: any) => <li>{p.children}</li>,
+        strong:     (p: any) => <strong className="font-semibold">{p.children}</strong>,
+        em:         (p: any) => <em className="italic">{p.children}</em>,
+        h1:         (p: any) => <h1 className="text-base font-bold mb-2 mt-1">{p.children}</h1>,
+        h2:         (p: any) => <h2 className="text-sm font-bold mb-1 mt-1">{p.children}</h2>,
+        h3:         (p: any) => <h3 className="text-sm font-semibold mb-1 mt-1">{p.children}</h3>,
+        a:          (p: any) => <a href={p.href} className="text-indigo-400 hover:underline" target="_blank" rel="noopener noreferrer">{p.children}</a>,
+        blockquote: (p: any) => <blockquote className="border-l-2 border-gray-500 pl-3 text-gray-400 my-2 italic">{p.children}</blockquote>,
+        hr:         ()       => <hr className="border-gray-700 my-3" />,
+        table:      (p: any) => <div className="overflow-x-auto my-2"><table className="text-xs border-collapse w-full">{p.children}</table></div>,
+        thead:      (p: any) => <thead className="bg-gray-800">{p.children}</thead>,
+        th:         (p: any) => <th className="border border-gray-700 px-2 py-1 font-medium text-left">{p.children}</th>,
+        td:         (p: any) => <td className="border border-gray-700 px-2 py-1">{p.children}</td>,
+        pre:        (p: any) => <pre className="bg-gray-950 border border-gray-700 rounded-lg p-3 overflow-x-auto text-xs font-mono my-2 whitespace-pre">{p.children}</pre>,
+        code:       (p: any) => p.className
+          ? <code className={`text-xs font-mono ${p.className}`}>{p.children}</code>
+          : <code className="bg-gray-700/60 px-1 py-0.5 rounded text-xs font-mono">{p.children}</code>,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
-  // Load / clear chat history when profile switches
+export default function ChatPage({ profile, onMessageSent }: Props) {
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput]       = useState('')
+  const [streaming, setStreaming] = useState(false)
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const { addToast } = useToast()
+
+  // Load / clear history when profile switches
   useEffect(() => {
     if (!profile) { setMessages([]); return }
     try {
       const stored = localStorage.getItem(`chat_history_${profile.id}`)
       setMessages(stored ? JSON.parse(stored) : [])
-    } catch {
-      setMessages([])
-    }
+    } catch { setMessages([]) }
   }, [profile?.id])
 
-  // Persist messages whenever they change
+  // Persist messages
   useEffect(() => {
     if (!profile) return
     localStorage.setItem(`chat_history_${profile.id}`, JSON.stringify(messages))
@@ -68,10 +111,22 @@ export default function ChatPage({ profile }: Props) {
     localStorage.removeItem(`chat_history_${profile.id}`)
   }
 
+  async function copyMessage(idx: number, content: string) {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopiedIdx(idx)
+      setTimeout(() => setCopiedIdx(null), 2000)
+      addToast('success', 'Copied to clipboard')
+    } catch {
+      addToast('error', 'Copy failed')
+    }
+  }
+
   async function sendMessage() {
     if (!input.trim() || streaming || !profile?.current_model) return
 
     const userMsg: Message = { role: 'user', content: input.trim() }
+    onMessageSent?.()
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setStreaming(true)
@@ -91,13 +146,18 @@ export default function ChatPage({ profile }: Props) {
         const { done, value } = await reader.read()
         if (done) break
 
-        const text = decoder.decode(value)
-        const lines = text.split('\n').filter(l => l.startsWith('data: '))
+        const lines = decoder.decode(value).split('\n').filter(l => l.startsWith('data: '))
 
         for (const line of lines) {
           try {
             const chunk = JSON.parse(line.slice(6))
-            if (chunk.type === 'tool_call') {
+            if (chunk.type === 'rag_sources') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1] = { ...updated[updated.length - 1], sources: chunk.sources }
+                return updated
+              })
+            } else if (chunk.type === 'tool_call') {
               setMessages(prev => {
                 const updated = [...prev]
                 const last = updated[updated.length - 1]
@@ -131,9 +191,7 @@ export default function ChatPage({ profile }: Props) {
                 return updated
               })
             }
-          } catch {
-            // ignore malformed chunks
-          }
+          } catch { /* ignore malformed */ }
         }
       }
     } catch (err) {
@@ -148,10 +206,7 @@ export default function ChatPage({ profile }: Props) {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage()
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   }
 
   const hasModel = Boolean(profile?.current_model)
@@ -185,7 +240,7 @@ export default function ChatPage({ profile }: Props) {
         )}
       </div>
 
-      {/* No model yet */}
+      {/* No model */}
       {!hasModel && profile && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center space-y-3">
@@ -198,14 +253,14 @@ export default function ChatPage({ profile }: Props) {
         </div>
       )}
 
-      {/* No profile selected */}
+      {/* No profile */}
       {!profile && (
         <div className="flex-1 flex items-center justify-center">
           <p className="text-gray-500 text-sm">Select a profile from the sidebar to start chatting.</p>
         </div>
       )}
 
-      {/* Chat area — only shown when model exists */}
+      {/* Chat area */}
       {hasModel && (
         <>
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
@@ -217,7 +272,7 @@ export default function ChatPage({ profile }: Props) {
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed
+                  className={`group relative max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed
                     ${msg.role === 'user'
                       ? 'bg-indigo-600 text-white rounded-br-sm'
                       : 'bg-gray-800 text-gray-100 rounded-bl-sm'}`}
@@ -245,9 +300,36 @@ export default function ChatPage({ profile }: Props) {
                       ))}
                     </div>
                   )}
-                  <span className="whitespace-pre-wrap">
-                    {msg.content || (streaming && msg.role === 'assistant' ? '▌' : '')}
-                  </span>
+
+                  {/* Message content */}
+                  {msg.role === 'assistant' ? (
+                    msg.content
+                      ? <MdContent content={msg.content} />
+                      : streaming ? <span className="animate-pulse text-gray-400">▌</span> : null
+                  ) : (
+                    <span className="whitespace-pre-wrap">{msg.content}</span>
+                  )}
+
+                  {/* RAG sources */}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-gray-700/50 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs text-gray-500">📄 Sources:</span>
+                      {msg.sources.map(s => (
+                        <span key={s} className="text-xs px-1.5 py-0.5 bg-gray-700/50 text-gray-400 rounded">{s}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Copy button — assistant messages only, visible on hover */}
+                  {msg.role === 'assistant' && msg.content && (
+                    <button
+                      onClick={() => copyMessage(i, msg.content)}
+                      className="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs text-gray-300"
+                      title="Copy"
+                    >
+                      {copiedIdx === i ? '✓' : '⎘'}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
