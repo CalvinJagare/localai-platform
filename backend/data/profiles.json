@@ -1,16 +1,26 @@
 {
-  "58d6cd4e-d0e4-48d0-854c-7141632ff556": {
-    "slug": "default",
-    "display_name": "Default",
+  "6a2699f5-dda8-4a7a-a808-6d666f65c2bf": {
+    "slug": "base",
+    "display_name": "Base",
     "color": "indigo",
     "current_model": null,
-    "created_at": "2026-04-19T23:37:00.459306+00:00"
+    "base_profile_id": null,
+    "created_at": "2026-04-20T00:58:47.156073+00:00"
   },
-  "849d39aa-4b5b-4a5c-93b7-04b4c13b4ea1": {
+  "28b24dd0-165d-4660-97e0-ce10f568a2c5": {
     "slug": "hr",
     "display_name": "HR",
-    "color": "rose",
+    "color": "emerald",
     "current_model": null,
-    "created_at": "2026-04-19T23:43:19.753598+00:00"
+    "base_profile_id": "6a2699f5-dda8-4a7a-a808-6d666f65c2bf",
+    "created_at": "2026-04-20T00:58:56.157180+00:00"
+  },
+  "085c3da8-c012-476a-bfb7-3c83ec0e45d8": {
+    "slug": "sales",
+    "display_name": "Sales",
+    "color": "amber",
+    "current_model": null,
+    "base_profile_id": "6a2699f5-dda8-4a7a-a808-6d666f65c2bf",
+    "created_at": "2026-04-20T00:59:10.500664+00:00"
   }
 }

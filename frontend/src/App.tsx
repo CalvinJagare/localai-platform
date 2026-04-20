@@ -5,11 +5,14 @@ import ChatPage from './pages/ChatPage'
 import TrainingPage from './pages/TrainingPage'
 import DataPage from './pages/DataPage'
 import ProfilesPage from './pages/ProfilesPage'
+import InstructionsPage from './pages/InstructionsPage'
+import SettingsPage from './pages/SettingsPage'
 import HealthPage from './pages/HealthPage'
+import DocumentsPage from './pages/DocumentsPage'
 
 export const API = 'http://localhost:8000'
 
-export type Page = 'chat' | 'training' | 'data' | 'profiles' | 'health'
+export type Page = 'chat' | 'training' | 'data' | 'profiles' | 'instructions' | 'settings' | 'health' | 'documents'
 
 export type ProfileColor = 'indigo' | 'emerald' | 'amber' | 'rose' | 'violet' | 'sky' | 'teal'
 
@@ -20,6 +23,7 @@ export interface Profile {
   color: ProfileColor
   current_model: string | null
   base_profile_id: string | null
+  enabled_tools: string[]
   job_count: number
   created_at: string
 }
@@ -127,7 +131,10 @@ export default function App() {
             onSelectProfile={selectProfile}
           />
         )}
-        {page === 'health'    && <HealthPage />}
+        {page === 'instructions' && <InstructionsPage profile={selectedProfile} />}
+        {page === 'documents'    && <DocumentsPage profile={selectedProfile} />}
+        {page === 'settings'     && <SettingsPage />}
+        {page === 'health'       && <HealthPage />}
       </main>
     </div>
   )

@@ -22,13 +22,13 @@ interface ValidationResult {
 interface SelectedFile {
   id: string
   file: File
-  validation: ValidationResult | null  // null = still validating
+  validation: ValidationResult | null
 }
 
 interface UploadResult {
   job_id: string
   filename: string
-  size_bytes: number
+  size_bytes?: number
   status: JobStatus
   base_model_override?: string | null
 }
@@ -49,25 +49,36 @@ interface JobRecord {
   created_at?: string
   ollama_model?: string
   profile_id?: string
+  epochs?: number
+}
+
+interface DataFile {
+  filename: string
+  display_name: string
+  size_bytes: number
+  line_count: number
+}
+
+interface QueueItem {
+  id: string
+  filename: string      // stored filename (full, e.g. uuid_dolly.jsonl)
+  displayName: string
+  epochs: number
 }
 
 const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed']
 
 const FORMAT_LABEL: Record<DataFormat, string> = {
-  chat:        'chat',
-  instruction: 'instruction',
-  text:        'text',
-  mixed:       'mixed',
-  unknown:     'unknown',
+  chat: 'chat', instruction: 'instruction', text: 'text', mixed: 'mixed', unknown: 'unknown',
 }
+
+const EPOCH_OPTIONS = [1, 2, 3, 5, 10]
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function randomId() {
-  return Math.random().toString(36).slice(2)
-}
+function randomId() { return Math.random().toString(36).slice(2) }
 
 async function validateJsonl(file: File): Promise<ValidationResult> {
   const lines = (await file.text()).split('\n').filter(l => l.trim())
@@ -79,9 +90,9 @@ async function validateJsonl(file: File): Promise<ValidationResult> {
     try {
       const rec = JSON.parse(lines[i])
       if (rec && typeof rec === 'object') {
-        if ('messages' in rec)     formats.add('chat')
+        if ('messages' in rec)        formats.add('chat')
         else if ('instruction' in rec) formats.add('instruction')
-        else if ('text' in rec)    formats.add('text')
+        else if ('text' in rec)        formats.add('text')
         else formats.add('unknown')
       }
       valid++
@@ -105,7 +116,7 @@ async function combineFiles(items: SelectedFile[]): Promise<File> {
   for (const { file } of items) {
     const lines = (await file.text()).split('\n').filter(l => l.trim())
     for (const line of lines) {
-      try { JSON.parse(line); parts.push(line) } catch { /* skip invalid */ }
+      try { JSON.parse(line); parts.push(line) } catch { /* skip */ }
     }
   }
   const name = items.length === 1
@@ -133,6 +144,16 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
   const [error, setError]                       = useState<string | null>(null)
   const [jobHistory, setJobHistory]             = useState<JobRecord[]>([])
   const [continueTraining, setContinueTraining] = useState(true)
+  const [epochs, setEpochs]                     = useState(3)
+
+  // Queue state
+  const [queue, setQueue]             = useState<QueueItem[]>([])
+  const [queueRunning, setQueueRunning] = useState(false)
+  const [dataFiles, setDataFiles]     = useState<DataFile[]>([])
+  const [queueOpen, setQueueOpen]     = useState(false)
+  const [addingFile, setAddingFile]   = useState('')
+  const [addingEpochs, setAddingEpochs] = useState(3)
+
   const inputRef = useRef<HTMLInputElement>(null)
   const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -145,13 +166,25 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
     } catch {}
   }
 
+  async function fetchDataFiles() {
+    try {
+      const resp = await fetch(`${API}/data/files`)
+      if (!resp.ok) return
+      setDataFiles(await resp.json())
+    } catch {}
+  }
+
   useEffect(() => {
     setJob(null); setJobStatus(null); setError(null); setSelectedFiles([])
-    setContinueTraining(true)
+    setContinueTraining(true); setQueueRunning(false)
     fetchHistory()
   }, [profile?.id])
 
-  // Update profile state after successful merge
+  useEffect(() => {
+    if (queueOpen) fetchDataFiles()
+  }, [queueOpen])
+
+  // Update profile after merge
   useEffect(() => {
     if (jobStatus?.status === 'merged' && profile) {
       fetch(`${API}/profiles`)
@@ -185,35 +218,33 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
     return () => clearInterval(pollRef.current!)
   }, [job, jobStatus?.status])
 
-  // Add files to the selection list and kick off validation
+  // Auto-advance queue when current job reaches terminal status
+  useEffect(() => {
+    if (!queueRunning) return
+    if (!TERMINAL.includes(jobStatus?.status ?? ('' as JobStatus))) return
+    if (queue.length === 0) { setQueueRunning(false); return }
+
+    const [next, ...rest] = queue
+    setQueue(rest)
+    submitFromFile(next)
+  }, [jobStatus?.status, queueRunning])
+
   function addFiles(fileList: FileList | File[]) {
     const incoming = Array.from(fileList).filter(f => f.name.endsWith('.jsonl'))
     if (incoming.length === 0) { setError('Only .jsonl files are accepted.'); return }
     setError(null)
-
-    const newItems: SelectedFile[] = incoming.map(file => ({
-      id: randomId(),
-      file,
-      validation: null,
-    }))
-
+    const newItems: SelectedFile[] = incoming.map(file => ({ id: randomId(), file, validation: null }))
     setSelectedFiles(prev => {
       const existing = new Set(prev.map(i => i.file.name))
       return [...prev, ...newItems.filter(i => !existing.has(i.file.name))]
     })
-
-    // Validate each asynchronously
     newItems.forEach(async item => {
       const result = await validateJsonl(item.file)
-      setSelectedFiles(prev =>
-        prev.map(i => i.id === item.id ? { ...i, validation: result } : i)
-      )
+      setSelectedFiles(prev => prev.map(i => i.id === item.id ? { ...i, validation: result } : i))
     })
   }
 
-  function removeFile(id: string) {
-    setSelectedFiles(prev => prev.filter(i => i.id !== id))
-  }
+  function removeFile(id: string) { setSelectedFiles(prev => prev.filter(i => i.id !== id)) }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault(); setDragging(false)
@@ -222,18 +253,18 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files) addFiles(e.target.files)
-    e.target.value = ''  // reset so same file can be re-added after removal
+    e.target.value = ''
   }
 
   async function startTraining() {
     if (!profile || selectedFiles.length === 0) return
     setError(null); setJob(null); setJobStatus(null); setUploading(true)
-
     try {
       const combined = await combineFiles(selectedFiles)
       const form = new FormData()
       form.append('file', combined)
       form.append('profile_id', profile.id)
+      form.append('epochs', String(epochs))
       form.append('start_fresh', continueTraining ? 'false' : 'true')
       const resp = await fetch(`${API}/train`, { method: 'POST', body: form })
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
@@ -247,6 +278,52 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
     } finally {
       setUploading(false)
     }
+  }
+
+  async function submitFromFile(item: QueueItem) {
+    if (!profile) return
+    setError(null); setJob(null); setJobStatus(null)
+    try {
+      const resp = await fetch(`${API}/train/from-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: item.filename,
+          profile_id: profile.id,
+          epochs: item.epochs,
+          start_fresh: !continueTraining,
+        }),
+      })
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
+      const result: UploadResult = await resp.json()
+      setJob(result)
+      setJobStatus({ status: result.status, progress: 0, error: null })
+      fetchHistory()
+    } catch (err) {
+      setError(String(err))
+      setQueueRunning(false)
+    }
+  }
+
+  function runQueue() {
+    if (queue.length === 0 || !profile) return
+    const [first, ...rest] = queue
+    setQueue(rest)
+    setQueueRunning(true)
+    submitFromFile(first)
+  }
+
+  function addToQueue() {
+    if (!addingFile) return
+    const df = dataFiles.find(f => f.filename === addingFile)
+    if (!df) return
+    setQueue(prev => [...prev, {
+      id: randomId(),
+      filename: df.filename,
+      displayName: df.display_name,
+      epochs: addingEpochs,
+    }])
+    setAddingFile('')
   }
 
   async function triggerMerge() {
@@ -273,9 +350,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
   }
 
   const isActive = jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
-
-  // Totals across selected files
-  const totalValid   = selectedFiles.reduce((n, i) => n + (i.validation?.valid   ?? 0), 0)
+  const totalValid   = selectedFiles.reduce((n, i) => n + (i.validation?.valid ?? 0), 0)
   const allValidated = selectedFiles.length > 0 && selectedFiles.every(i => i.validation !== null)
   const anyUsable    = selectedFiles.some(i => (i.validation?.valid ?? 0) > 0)
   const canTrain     = allValidated && anyUsable && !isActive && !uploading && profile !== null
@@ -297,7 +372,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
 
-      {/* Active profile badge + inheritance chain */}
+      {/* Profile badge */}
       <div className="mb-4 flex items-center flex-wrap gap-2">
         <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm">
           <span className="text-gray-400">Training for:</span>
@@ -316,9 +391,9 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
         })()}
       </div>
 
-      {/* Continue vs fresh toggle — only shown when profile already has a model */}
+      {/* Continue / fresh toggle */}
       {profile.current_model && (
-        <div className="mb-6 p-3 bg-gray-900 border border-gray-700 rounded-xl flex items-center justify-between gap-4">
+        <div className="mb-4 p-3 bg-gray-900 border border-gray-700 rounded-xl flex items-center justify-between gap-4">
           <div>
             <p className="text-sm font-medium text-gray-200">
               {continueTraining ? 'Continue from existing model' : 'Start fresh from Phi-3-mini'}
@@ -337,6 +412,25 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
           </button>
         </div>
       )}
+
+      {/* Epoch selector */}
+      <div className="mb-4 flex items-center gap-3">
+        <span className="text-xs text-gray-400 shrink-0">Epochs</span>
+        <div className="flex gap-1">
+          {EPOCH_OPTIONS.map(n => (
+            <button
+              key={n}
+              onClick={() => setEpochs(n)}
+              className={`w-9 h-7 text-xs font-medium rounded-lg transition-colors ${epochs === n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-gray-600">
+          {epochs === 1 ? 'Fast, light pass' : epochs <= 3 ? 'Standard' : epochs <= 5 ? 'Thorough' : 'Very deep — risk overfitting'}
+        </span>
+      </div>
 
       {/* Drop zone */}
       <div
@@ -365,14 +459,12 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
         </p>
       </div>
 
-      {/* Selected files list */}
+      {/* Selected files */}
       {selectedFiles.length > 0 && (
         <div className="space-y-2 mb-4">
           {selectedFiles.map(item => (
             <FileCard key={item.id} item={item} onRemove={() => removeFile(item.id)} />
           ))}
-
-          {/* Summary row */}
           {allValidated && (
             <div className="flex items-center justify-between px-1 pt-1 text-xs text-gray-500">
               <span>
@@ -401,7 +493,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
             ? 'Uploading…'
             : !allValidated
               ? 'Validating files…'
-              : `Start Training for ${profile.display_name}`}
+              : `Start Training — ${epochs} epoch${epochs !== 1 ? 's' : ''}`}
         </button>
       )}
 
@@ -416,6 +508,9 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
             <div className="flex items-center gap-2 font-medium">
               <StatusDot status={jobStatus.status} />
               <span className="capitalize text-gray-200">{jobStatus.status.replace('_', ' ')}</span>
+              {queueRunning && queue.length > 0 && (
+                <span className="text-xs text-indigo-400 font-normal">· {queue.length} more queued</span>
+              )}
             </div>
             <span className="text-xs text-gray-500 font-mono">{job.job_id.slice(0, 8)}…</span>
           </div>
@@ -439,7 +534,10 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-green-400">
                 <span>✓</span>
-                <span>Adapter saved — ready to merge into <span className="font-medium">{profile.display_name}</span></span>
+                <span>
+                  Adapter saved — ready to merge into <span className="font-medium">{profile.display_name}</span>
+                  {queueRunning && queue.length > 0 && ' (next run starting…)'}
+                </span>
               </div>
               <button onClick={triggerMerge} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors">
                 Merge &amp; load into Ollama
@@ -478,11 +576,105 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
 
           <div className="border-t border-gray-800 pt-3 space-y-1.5">
             <Row label="File"       value={job.filename} />
-            <Row label="Size"       value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />
+            {job.size_bytes != null && <Row label="Size" value={`${(job.size_bytes / 1024).toFixed(1)} KB`} />}
             <Row label="Base model" value={job.base_model_override ? `${profile.display_name} (continued)` : 'Phi-3-mini-4k-instruct (fresh)'} />
           </div>
         </div>
       )}
+
+      {/* ── Training Queue ──────────────────────────────────────────────── */}
+      <div className="mt-8 border-t border-gray-800 pt-6">
+        <button
+          onClick={() => setQueueOpen(o => !o)}
+          className="flex items-center gap-2 text-sm font-semibold text-gray-300 hover:text-white transition-colors w-full"
+        >
+          <span className={`text-xs transition-transform duration-150 ${queueOpen ? 'rotate-90' : ''}`}>▶</span>
+          Training Queue
+          {queue.length > 0 && (
+            <span className="px-2 py-0.5 bg-indigo-600 text-white text-xs rounded-full">{queue.length}</span>
+          )}
+          <span className="text-xs font-normal text-gray-500 ml-1">Run multiple datasets back to back automatically</span>
+        </button>
+
+        {queueOpen && (
+          <div className="mt-4 space-y-3">
+            {/* Add to queue row */}
+            <div className="flex items-center gap-2 p-3 bg-gray-900 border border-gray-800 rounded-xl">
+              <select
+                value={addingFile}
+                onChange={e => setAddingFile(e.target.value)}
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Pick a file from data library…</option>
+                {dataFiles.map(f => (
+                  <option key={f.filename} value={f.filename}>
+                    {f.display_name} ({f.line_count.toLocaleString()} examples)
+                  </option>
+                ))}
+              </select>
+              <div className="flex gap-1 shrink-0">
+                {EPOCH_OPTIONS.map(n => (
+                  <button
+                    key={n}
+                    onClick={() => setAddingEpochs(n)}
+                    className={`w-8 h-7 text-xs font-medium rounded-lg transition-colors ${addingEpochs === n ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={addToQueue}
+                disabled={!addingFile}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors shrink-0"
+              >
+                + Add
+              </button>
+            </div>
+
+            {/* Queue items */}
+            {queue.length > 0 ? (
+              <>
+                <div className="space-y-1.5">
+                  {queue.map((item, idx) => (
+                    <div key={item.id} className="flex items-center gap-3 px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-xs">
+                      <span className="text-gray-600 w-4 shrink-0">{idx + 1}.</span>
+                      <span className="flex-1 text-gray-300 truncate">{item.displayName}</span>
+                      <span className="text-gray-500 shrink-0">{item.epochs} epoch{item.epochs !== 1 ? 's' : ''}</span>
+                      <button
+                        onClick={() => setQueue(prev => prev.filter(i => i.id !== item.id))}
+                        className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+                  <span>
+                    {queue.length} run{queue.length !== 1 ? 's' : ''} · {queue.reduce((s, i) => s + i.epochs, 0)} total epochs
+                  </span>
+                  <button
+                    onClick={() => setQueue([])}
+                    className="text-gray-600 hover:text-red-400 transition-colors"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                <button
+                  onClick={runQueue}
+                  disabled={!!isActive || queueRunning}
+                  className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
+                >
+                  {queueRunning ? `Running queue… (${queue.length} left)` : `Run Queue — ${queue.length} run${queue.length !== 1 ? 's' : ''}`}
+                </button>
+              </>
+            ) : (
+              <p className="text-xs text-gray-600 text-center py-3">
+                Queue is empty — add runs above, then click Run Queue.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Job history */}
       {jobHistory.length > 0 && (
@@ -495,6 +687,9 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
                   <StatusDot status={j.status} />
                   <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
                   <span className="flex-1 text-gray-400 truncate">{j.filename ?? 'unknown'}</span>
+                  {j.epochs != null && j.epochs !== 3 && (
+                    <span className="text-xs text-gray-600 shrink-0">{j.epochs}ep</span>
+                  )}
                   <span className="text-xs text-gray-500 capitalize shrink-0">{j.status.replace('_', ' ')}</span>
                   {j.created_at && (
                     <span className="text-xs text-gray-600 shrink-0">{new Date(j.created_at).toLocaleString()}</span>
@@ -527,20 +722,9 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate }
 function FileCard({ item, onRemove }: { item: SelectedFile; onRemove: () => void }) {
   const v = item.validation
 
-  const statusIcon = v === null ? '⏳'
-    : v.valid === 0      ? '✕'
-    : v.invalid > 0      ? '⚠'
-    : '✓'
-
-  const statusColor = v === null ? 'text-gray-500'
-    : v.valid === 0      ? 'text-red-400'
-    : v.invalid > 0      ? 'text-amber-400'
-    : 'text-green-400'
-
-  const cardBorder = v === null ? 'border-gray-800'
-    : v.valid === 0      ? 'border-red-900/60'
-    : v.invalid > 0      ? 'border-amber-900/60'
-    : 'border-gray-800'
+  const statusIcon  = v === null ? '⏳' : v.valid === 0 ? '✕' : v.invalid > 0 ? '⚠' : '✓'
+  const statusColor = v === null ? 'text-gray-500' : v.valid === 0 ? 'text-red-400' : v.invalid > 0 ? 'text-amber-400' : 'text-green-400'
+  const cardBorder  = v === null ? 'border-gray-800' : v.valid === 0 ? 'border-red-900/60' : v.invalid > 0 ? 'border-amber-900/60' : 'border-gray-800'
 
   return (
     <div className={`p-3 bg-gray-900 border ${cardBorder} rounded-xl text-sm`}>
@@ -548,9 +732,7 @@ function FileCard({ item, onRemove }: { item: SelectedFile; onRemove: () => void
         <span className={`mt-0.5 font-bold text-base leading-none ${statusColor}`}>{statusIcon}</span>
         <div className="flex-1 min-w-0">
           <p className="text-gray-200 font-medium truncate">{item.file.name}</p>
-          {v === null && (
-            <p className="text-xs text-gray-500 mt-0.5">Validating…</p>
-          )}
+          {v === null && <p className="text-xs text-gray-500 mt-0.5">Validating…</p>}
           {v !== null && (
             <div className="mt-0.5 flex items-center gap-2 flex-wrap">
               <span className="text-xs text-gray-400">
@@ -576,10 +758,7 @@ function FileCard({ item, onRemove }: { item: SelectedFile; onRemove: () => void
             <p className="text-xs text-red-400 mt-1">No valid examples — this file cannot be used.</p>
           )}
         </div>
-        <button
-          onClick={onRemove}
-          className="text-gray-600 hover:text-red-400 transition-colors text-base leading-none mt-0.5 flex-shrink-0"
-        >🗑</button>
+        <button onClick={onRemove} className="text-gray-600 hover:text-red-400 transition-colors text-base leading-none mt-0.5 flex-shrink-0">🗑</button>
       </div>
     </div>
   )

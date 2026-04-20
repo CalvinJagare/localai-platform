@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { API, type Profile, type ProfileColor } from '../App'
 
+const TOOL_LABELS: Record<string, string> = {
+  get_datetime: 'Date & Time',
+  calculate:    'Calculator',
+  web_search:   'Web Search',
+  wiki_search:  'Wikipedia',
+  get_weather:  'Weather',
+}
+
 const DOT: Record<ProfileColor, string> = {
   indigo:  'bg-indigo-500',
   emerald: 'bg-emerald-500',
@@ -11,9 +19,16 @@ const DOT: Record<ProfileColor, string> = {
   teal:    'bg-teal-500',
 }
 
+interface ToolActivity {
+  tool: string
+  args: Record<string, unknown>
+  result?: string
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  tools?: ToolActivity[]
 }
 
 interface Props {
@@ -66,7 +81,7 @@ export default function ChatPage({ profile }: Props) {
       const resp = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg.content, model: profile.current_model }),
+        body: JSON.stringify({ messages: [...messages, userMsg], model: profile.current_model, profile_id: profile.id }),
       })
 
       const reader = resp.body!.getReader()
@@ -82,7 +97,31 @@ export default function ChatPage({ profile }: Props) {
         for (const line of lines) {
           try {
             const chunk = JSON.parse(line.slice(6))
-            if (chunk.token) {
+            if (chunk.type === 'tool_call') {
+              setMessages(prev => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                updated[updated.length - 1] = {
+                  ...last,
+                  tools: [...(last.tools ?? []), { tool: chunk.tool, args: chunk.args }],
+                }
+                return updated
+              })
+            } else if (chunk.type === 'tool_result') {
+              setMessages(prev => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                updated[updated.length - 1] = {
+                  ...last,
+                  tools: (last.tools ?? []).map(t =>
+                    t.tool === chunk.tool && t.result === undefined
+                      ? { ...t, result: chunk.result }
+                      : t
+                  ),
+                }
+                return updated
+              })
+            } else if (chunk.token !== undefined) {
               setMessages(prev => {
                 const updated = [...prev]
                 updated[updated.length - 1] = {
@@ -178,12 +217,37 @@ export default function ChatPage({ profile }: Props) {
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div
-                  className={`max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap
+                  className={`max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed
                     ${msg.role === 'user'
                       ? 'bg-indigo-600 text-white rounded-br-sm'
                       : 'bg-gray-800 text-gray-100 rounded-bl-sm'}`}
                 >
-                  {msg.content || (streaming && msg.role === 'assistant' ? '▌' : '')}
+                  {/* Tool call indicators */}
+                  {msg.tools && msg.tools.length > 0 && (
+                    <div className="mb-2 space-y-1">
+                      {msg.tools.map((t, ti) => (
+                        <details key={ti} className="text-xs">
+                          <summary className="cursor-pointer select-none text-gray-400 flex items-center gap-1.5 list-none">
+                            <span>{t.result !== undefined ? '✓' : '⟳'}</span>
+                            <span className="text-gray-300 font-medium">{TOOL_LABELS[t.tool] ?? t.tool}</span>
+                            {t.args && Object.keys(t.args).length > 0 && (
+                              <span className="text-gray-500 truncate max-w-48">
+                                {Object.values(t.args).join(', ')}
+                              </span>
+                            )}
+                          </summary>
+                          {t.result && (
+                            <pre className="mt-1.5 p-2 bg-gray-900/70 border border-gray-700 rounded-lg text-gray-400 whitespace-pre-wrap overflow-x-auto max-h-32 overflow-y-auto">
+                              {t.result}
+                            </pre>
+                          )}
+                        </details>
+                      ))}
+                    </div>
+                  )}
+                  <span className="whitespace-pre-wrap">
+                    {msg.content || (streaming && msg.role === 'assistant' ? '▌' : '')}
+                  </span>
                 </div>
               </div>
             ))}

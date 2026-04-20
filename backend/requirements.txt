@@ -10,3 +10,6 @@ torch
 trl
 transformers
 datasets
+# RAG dependencies
+rank_bm25==0.2.2
+pypdf==4.3.1

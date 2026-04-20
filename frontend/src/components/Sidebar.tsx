@@ -11,11 +11,14 @@ interface Props {
 }
 
 const links: { id: Page; label: string; icon: string }[] = [
-  { id: 'chat',     label: 'Chat',     icon: '💬' },
-  { id: 'training', label: 'Training', icon: '🧠' },
-  { id: 'data',     label: 'Data',     icon: '🗂️' },
-  { id: 'profiles', label: 'Profiles', icon: '👤' },
-  { id: 'health',   label: 'Health',   icon: '📊' },
+  { id: 'chat',         label: 'Chat',         icon: '💬' },
+  { id: 'training',     label: 'Training',     icon: '🧠' },
+  { id: 'instructions', label: 'Instructions', icon: '📋' },
+  { id: 'documents',    label: 'Documents',    icon: '📄' },
+  { id: 'data',         label: 'Data',         icon: '🗂️' },
+  { id: 'profiles',     label: 'Profiles',     icon: '👤' },
+  { id: 'health',       label: 'Health',       icon: '📊' },
+  { id: 'settings',     label: 'Settings',     icon: '⚙️'  },
 ]
 
 export default function Sidebar({ current, onNavigate, profiles, selectedProfileId, onSelectProfile, onProfilesChange }: Props) {

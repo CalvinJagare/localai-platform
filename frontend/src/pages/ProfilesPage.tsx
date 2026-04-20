@@ -1,5 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { API, type Profile, type ProfileColor } from '../App'
+
+interface ToolInfo {
+  id: string
+  name: string
+  description: string
+  requires_key: string | null
+  key_configured: boolean
+}
 
 const COLORS: ProfileColor[] = ['indigo', 'emerald', 'amber', 'rose', 'violet', 'sky', 'teal']
 
@@ -33,22 +41,34 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
   const [editingId, setEditingId]   = useState<string | null>(null)
   const [editName, setEditName]     = useState('')
   const [editBase, setEditBase]     = useState<string | null>(null)
+  const [editTools, setEditTools]   = useState<string[]>([])
   const [savingId, setSavingId]     = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [error, setError]           = useState<string | null>(null)
+  const [availableTools, setAvailableTools] = useState<ToolInfo[]>([])
 
   // New profile form
   const [creating, setCreating]   = useState(false)
   const [newName, setNewName]     = useState('')
   const [newColor, setNewColor]   = useState<ProfileColor>('indigo')
   const [newBase, setNewBase]     = useState<string | null>(null)
+  const [newTools, setNewTools]   = useState<string[]>([])
   const [saving, setSaving]       = useState(false)
+
+  useEffect(() => {
+    fetch(`${API}/tools`).then(r => r.json()).then(setAvailableTools).catch(() => {})
+  }, [])
 
   function startEdit(p: Profile) {
     setEditingId(p.id)
     setEditName(p.display_name)
     setEditBase(p.base_profile_id ?? null)
+    setEditTools(p.enabled_tools ?? [])
     setError(null)
+  }
+
+  function toggleTool(toolId: string, current: string[], setter: (t: string[]) => void) {
+    setter(current.includes(toolId) ? current.filter(t => t !== toolId) : [...current, toolId])
   }
 
   async function saveEdit(id: string) {
@@ -58,7 +78,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
       const resp = await fetch(`${API}/profiles/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: editName.trim(), base_profile_id: editBase }),
+        body: JSON.stringify({ display_name: editName.trim(), base_profile_id: editBase, enabled_tools: editTools }),
       })
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       const updated: Profile = await resp.json()
@@ -101,7 +121,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
       const resp = await fetch(`${API}/profiles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: newName.trim(), color: newColor, base_profile_id: newBase }),
+        body: JSON.stringify({ display_name: newName.trim(), color: newColor, base_profile_id: newBase, enabled_tools: newTools }),
       })
       if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       const created: Profile = await resp.json()
@@ -110,6 +130,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
       setCreating(false)
       setNewName('')
       setNewBase(null)
+      setNewTools([])
       setNewColor(COLORS[profiles.length % COLORS.length])
     } catch (err) {
       setError(String(err))
@@ -170,12 +191,9 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
           </div>
           <div>
             <label className="text-xs text-gray-400 block mb-1">Base profile <span className="text-gray-600">(optional — inherit shared training)</span></label>
-            <BaseSelect
-              value={newBase}
-              onChange={setNewBase}
-              options={profiles}
-            />
+            <BaseSelect value={newBase} onChange={setNewBase} options={profiles} />
           </div>
+          <ToolToggles tools={availableTools} enabled={newTools} onChange={t => toggleTool(t, newTools, setNewTools)} />
           <div className="flex gap-2">
             <button
               onClick={createProfile}
@@ -218,12 +236,9 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
                       />
                       <div>
                         <label className="text-xs text-gray-400 block mb-1">Base profile</label>
-                        <BaseSelect
-                          value={editBase}
-                          onChange={setEditBase}
-                          options={baseOptions(p.id)}
-                        />
+                        <BaseSelect value={editBase} onChange={setEditBase} options={baseOptions(p.id)} />
                       </div>
+                      <ToolToggles tools={availableTools} enabled={editTools} onChange={t => toggleTool(t, editTools, setEditTools)} />
                       <div className="flex gap-2">
                         <button
                           onClick={() => saveEdit(p.id)}
@@ -253,6 +268,18 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
                       )}
                       {baseName && (
                         <p>Base: <span className="text-gray-400">{baseName}</span></p>
+                      )}
+                      {p.enabled_tools?.length > 0 && (
+                        <div className="flex gap-1 flex-wrap pt-0.5">
+                          {p.enabled_tools.map(tid => {
+                            const tool = availableTools.find(t => t.id === tid)
+                            return (
+                              <span key={tid} className={`px-1.5 py-0.5 rounded text-xs font-medium ${tool?.key_configured === false ? 'bg-amber-900/40 text-amber-500' : 'bg-indigo-900/40 text-indigo-400'}`}>
+                                {tool?.name ?? tid}
+                              </span>
+                            )
+                          })}
+                        </div>
                       )}
                       <p>{p.job_count} training {p.job_count === 1 ? 'job' : 'jobs'}</p>
                       <p className="font-mono text-gray-700">slug: {p.slug}</p>
@@ -288,6 +315,43 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
           <p className="text-center text-gray-600 py-12 text-sm">No profiles yet — create one above.</p>
         )}
       </div>
+    </div>
+  )
+}
+
+function ToolToggles({ tools, enabled, onChange }: {
+  tools: ToolInfo[]
+  enabled: string[]
+  onChange: (id: string) => void
+}) {
+  if (tools.length === 0) return null
+  return (
+    <div>
+      <label className="text-xs text-gray-400 block mb-1.5">Tools</label>
+      <div className="space-y-1.5">
+        {tools.map(tool => {
+          const isOn = enabled.includes(tool.id)
+          const needsKey = tool.requires_key !== null && !tool.key_configured
+          return (
+            <label key={tool.id} className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors ${isOn ? 'bg-indigo-900/20' : 'hover:bg-gray-800'}`}>
+              <input
+                type="checkbox"
+                checked={isOn}
+                onChange={() => onChange(tool.id)}
+                className="mt-0.5 accent-indigo-500"
+              />
+              <div className="min-w-0">
+                <span className="text-xs font-medium text-gray-300">{tool.name}</span>
+                {needsKey && (
+                  <span className="ml-1.5 text-xs text-amber-500">⚠ API key required</span>
+                )}
+                <p className="text-xs text-gray-600 mt-0.5">{tool.description}</p>
+              </div>
+            </label>
+          )
+        })}
+      </div>
+      <p className="mt-2 text-xs text-gray-700">Want a new tool? Just ask Claude Code — new tools take ~5 minutes to add.</p>
     </div>
   )
 }
