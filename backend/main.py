@@ -221,7 +221,10 @@ def run_training(job_id: str, data_path: Path) -> None:
             for line in fh:
                 line = line.strip()
                 if line:
-                    records.append(json.loads(line))
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
 
         if not records:
             raise ValueError("Training file is empty.")

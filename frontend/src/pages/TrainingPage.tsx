@@ -1,14 +1,29 @@
 import { useState, useRef, useEffect } from 'react'
 import { API, type Profile } from '../App'
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 type JobStatus =
-  | 'queued'
-  | 'training'
-  | 'complete'
-  | 'failed'
-  | 'merging'
-  | 'merged'
-  | 'merge_failed'
+  | 'queued' | 'training' | 'complete' | 'failed'
+  | 'merging' | 'merged' | 'merge_failed'
+
+type DataFormat = 'chat' | 'instruction' | 'text' | 'mixed' | 'unknown'
+
+interface ValidationResult {
+  valid: number
+  invalid: number
+  total: number
+  format: DataFormat
+  errors: Array<{ line: number; reason: string }>
+}
+
+interface SelectedFile {
+  id: string
+  file: File
+  validation: ValidationResult | null  // null = still validating
+}
 
 interface UploadResult {
   job_id: string
@@ -37,20 +52,86 @@ interface JobRecord {
 
 const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed']
 
+const FORMAT_LABEL: Record<DataFormat, string> = {
+  chat:        'chat',
+  instruction: 'instruction',
+  text:        'text',
+  mixed:       'mixed',
+  unknown:     'unknown',
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function randomId() {
+  return Math.random().toString(36).slice(2)
+}
+
+async function validateJsonl(file: File): Promise<ValidationResult> {
+  const lines = (await file.text()).split('\n').filter(l => l.trim())
+  let valid = 0, invalid = 0
+  const errors: ValidationResult['errors'] = []
+  const formats = new Set<string>()
+
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      const rec = JSON.parse(lines[i])
+      if (rec && typeof rec === 'object') {
+        if ('messages' in rec)     formats.add('chat')
+        else if ('instruction' in rec) formats.add('instruction')
+        else if ('text' in rec)    formats.add('text')
+        else formats.add('unknown')
+      }
+      valid++
+    } catch {
+      invalid++
+      if (errors.length < 5) errors.push({ line: i + 1, reason: 'Invalid JSON' })
+    }
+  }
+
+  const fs = [...formats]
+  const format: DataFormat =
+    fs.length === 0 ? 'unknown'
+    : fs.length === 1 ? (fs[0] as DataFormat)
+    : 'mixed'
+
+  return { valid, invalid, total: lines.length, format, errors }
+}
+
+async function combineFiles(items: SelectedFile[]): Promise<File> {
+  const parts: string[] = []
+  for (const { file } of items) {
+    const lines = (await file.text()).split('\n').filter(l => l.trim())
+    for (const line of lines) {
+      try { JSON.parse(line); parts.push(line) } catch { /* skip invalid */ }
+    }
+  }
+  const name = items.length === 1
+    ? items[0].file.name
+    : `combined_${items.length}files.jsonl`
+  return new File([parts.join('\n') + '\n'], name, { type: 'application/json' })
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 interface Props {
   profile: Profile | null
   onProfileUpdate: (p: Profile) => void
 }
 
 export default function TrainingPage({ profile, onProfileUpdate }: Props) {
-  const [dragging, setDragging]     = useState(false)
-  const [uploading, setUploading]   = useState(false)
-  const [job, setJob]               = useState<UploadResult | null>(null)
-  const [jobStatus, setJobStatus]   = useState<StatusResult | null>(null)
-  const [error, setError]           = useState<string | null>(null)
-  const [jobHistory, setJobHistory] = useState<JobRecord[]>([])
-  const inputRef  = useRef<HTMLInputElement>(null)
-  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
+  const [dragging, setDragging]           = useState(false)
+  const [uploading, setUploading]         = useState(false)
+  const [job, setJob]                     = useState<UploadResult | null>(null)
+  const [jobStatus, setJobStatus]         = useState<StatusResult | null>(null)
+  const [error, setError]                 = useState<string | null>(null)
+  const [jobHistory, setJobHistory]       = useState<JobRecord[]>([])
+  const inputRef = useRef<HTMLInputElement>(null)
+  const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function fetchHistory() {
     if (!profile) return
@@ -61,15 +142,12 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
     } catch {}
   }
 
-  // Reload history when profile changes
   useEffect(() => {
-    setJob(null)
-    setJobStatus(null)
-    setError(null)
+    setJob(null); setJobStatus(null); setError(null); setSelectedFiles([])
     fetchHistory()
   }, [profile?.id])
 
-  // After a successful merge, re-fetch the profile so current_model is updated
+  // Update profile state after successful merge
   useEffect(() => {
     if (jobStatus?.status === 'merged' && profile) {
       fetch(`${API}/profiles`)
@@ -82,7 +160,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
     }
   }, [jobStatus?.status])
 
-  // Restart / stop polling whenever the status changes
+  // Poll active job
   useEffect(() => {
     if (!job) return
     if (TERMINAL.includes(jobStatus?.status ?? ('' as JobStatus))) return
@@ -97,35 +175,67 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
           clearInterval(pollRef.current!)
           fetchHistory()
         }
-      } catch {
-        // network hiccup — keep polling
-      }
+      } catch {}
     }, 3000)
 
     return () => clearInterval(pollRef.current!)
   }, [job, jobStatus?.status])
 
-  async function uploadFile(file: File) {
-    if (!file.name.endsWith('.jsonl')) { setError('Only .jsonl files are supported.'); return }
-    if (!profile) { setError('No profile selected.'); return }
-
+  // Add files to the selection list and kick off validation
+  function addFiles(fileList: FileList | File[]) {
+    const incoming = Array.from(fileList).filter(f => f.name.endsWith('.jsonl'))
+    if (incoming.length === 0) { setError('Only .jsonl files are accepted.'); return }
     setError(null)
-    setJob(null)
-    setJobStatus(null)
-    setUploading(true)
+
+    const newItems: SelectedFile[] = incoming.map(file => ({
+      id: randomId(),
+      file,
+      validation: null,
+    }))
+
+    setSelectedFiles(prev => {
+      const existing = new Set(prev.map(i => i.file.name))
+      return [...prev, ...newItems.filter(i => !existing.has(i.file.name))]
+    })
+
+    // Validate each asynchronously
+    newItems.forEach(async item => {
+      const result = await validateJsonl(item.file)
+      setSelectedFiles(prev =>
+        prev.map(i => i.id === item.id ? { ...i, validation: result } : i)
+      )
+    })
+  }
+
+  function removeFile(id: string) {
+    setSelectedFiles(prev => prev.filter(i => i.id !== id))
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault(); setDragging(false)
+    if (!isActive) addFiles(e.dataTransfer.files)
+  }
+
+  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files) addFiles(e.target.files)
+    e.target.value = ''  // reset so same file can be re-added after removal
+  }
+
+  async function startTraining() {
+    if (!profile || selectedFiles.length === 0) return
+    setError(null); setJob(null); setJobStatus(null); setUploading(true)
 
     try {
+      const combined = await combineFiles(selectedFiles)
       const form = new FormData()
-      form.append('file', file)
+      form.append('file', combined)
       form.append('profile_id', profile.id)
       const resp = await fetch(`${API}/train`, { method: 'POST', body: form })
-      if (!resp.ok) {
-        const data = await resp.json()
-        throw new Error(data.detail ?? resp.statusText)
-      }
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       const result: UploadResult = await resp.json()
       setJob(result)
       setJobStatus({ status: result.status, progress: 0, error: null })
+      setSelectedFiles([])
       fetchHistory()
     } catch (err) {
       setError(String(err))
@@ -138,10 +248,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
     if (!job) return
     try {
       const resp = await fetch(`${API}/train/${job.job_id}/merge`, { method: 'POST' })
-      if (!resp.ok) {
-        const data = await resp.json()
-        throw new Error(data.detail ?? resp.statusText)
-      }
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       setJobStatus(prev => prev ? { ...prev, status: 'merging', error: null } : null)
       fetchHistory()
     } catch (err) {
@@ -153,28 +260,20 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
     if (!window.confirm('Delete this job and its model files?')) return
     try {
       const resp = await fetch(`${API}/train/${jobId}`, { method: 'DELETE' })
-      if (!resp.ok) {
-        const data = await resp.json()
-        throw new Error(data.detail ?? resp.statusText)
-      }
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
       setJobHistory(prev => prev.filter(j => j.job_id !== jobId))
     } catch (err) {
       setError(`Delete failed: ${String(err)}`)
     }
   }
 
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault(); setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) uploadFile(file)
-  }
-
-  function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) uploadFile(file)
-  }
-
   const isActive = jobStatus && ['queued', 'training', 'merging'].includes(jobStatus.status)
+
+  // Totals across selected files
+  const totalValid   = selectedFiles.reduce((n, i) => n + (i.validation?.valid   ?? 0), 0)
+  const allValidated = selectedFiles.length > 0 && selectedFiles.every(i => i.validation !== null)
+  const anyUsable    = selectedFiles.some(i => (i.validation?.valid ?? 0) > 0)
+  const canTrain     = allValidated && anyUsable && !isActive && !uploading && profile !== null
 
   if (!profile) {
     return (
@@ -188,8 +287,8 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
     <div className="p-8 max-w-2xl mx-auto">
       <h2 className="text-xl font-semibold mb-1">Training</h2>
       <p className="text-sm text-gray-400 mb-2">
-        Upload a <code className="bg-gray-800 px-1 rounded text-gray-200">.jsonl</code> file to
-        start a QLoRA fine-tuning job on{' '}
+        Upload one or more{' '}
+        <code className="bg-gray-800 px-1 rounded text-gray-200">.jsonl</code> files to fine-tune{' '}
         <span className="text-gray-300">Phi-3-mini-4k-instruct</span>.
       </p>
 
@@ -204,36 +303,78 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
 
       {/* Drop zone */}
       <div
-        onDragOver={(e) => { e.preventDefault(); if (!isActive) setDragging(true) }}
+        onDragOver={e => { e.preventDefault(); if (!isActive) setDragging(true) }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { if (!isActive) onDrop(e) }}
+        onDrop={onDrop}
         onClick={() => { if (!isActive) inputRef.current?.click() }}
-        className={`border-2 border-dashed rounded-2xl p-12 text-center transition-colors
+        className={`border-2 border-dashed rounded-2xl p-8 text-center transition-colors mb-4
           ${isActive
             ? 'border-gray-700 bg-gray-900 opacity-50 cursor-not-allowed'
             : dragging
               ? 'border-indigo-500 bg-indigo-950 cursor-pointer'
               : 'border-gray-700 hover:border-gray-500 bg-gray-900 cursor-pointer'}`}
       >
-        <input ref={inputRef} type="file" accept=".jsonl" onChange={onFileChange} className="hidden" />
-        <div className="text-4xl mb-3">📂</div>
+        <input ref={inputRef} type="file" accept=".jsonl" multiple onChange={onFileChange} className="hidden" />
+        <div className="text-3xl mb-2">📂</div>
         <p className="text-sm text-gray-300 font-medium">
-          {uploading
-            ? 'Uploading…'
-            : isActive
-              ? `${jobStatus?.status === 'merging' ? 'Merging in progress…' : 'Training in progress…'}`
-              : 'Drop a .jsonl file here or click to browse'}
+          {isActive
+            ? jobStatus?.status === 'merging' ? 'Merging in progress…' : 'Training in progress…'
+            : selectedFiles.length > 0
+              ? 'Drop more files or click to add'
+              : 'Drop .jsonl files here or click to browse'}
         </p>
-        <p className="text-xs text-gray-500 mt-1">Accepted format: .jsonl</p>
+        <p className="text-xs text-gray-500 mt-1">
+          {selectedFiles.length > 0 ? 'Multiple files will be combined' : 'One or more .jsonl files'}
+        </p>
       </div>
 
+      {/* Selected files list */}
+      {selectedFiles.length > 0 && (
+        <div className="space-y-2 mb-4">
+          {selectedFiles.map(item => (
+            <FileCard key={item.id} item={item} onRemove={() => removeFile(item.id)} />
+          ))}
+
+          {/* Summary row */}
+          {allValidated && (
+            <div className="flex items-center justify-between px-1 pt-1 text-xs text-gray-500">
+              <span>
+                Total:{' '}
+                <span className="text-gray-300 font-medium">
+                  {totalValid.toLocaleString()} valid example{totalValid !== 1 ? 's' : ''}
+                </span>
+                {selectedFiles.length > 1 && ` across ${selectedFiles.length} files`}
+              </span>
+              {!anyUsable && (
+                <span className="text-red-400">No usable examples — fix files before training</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Start Training button */}
+      {selectedFiles.length > 0 && !isActive && (
+        <button
+          onClick={startTraining}
+          disabled={!canTrain || uploading}
+          className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors mb-4"
+        >
+          {uploading
+            ? 'Uploading…'
+            : !allValidated
+              ? 'Validating files…'
+              : `Start Training for ${profile.display_name}`}
+        </button>
+      )}
+
       {error && (
-        <div className="mt-4 p-4 bg-red-950 border border-red-700 rounded-xl text-sm text-red-300">{error}</div>
+        <div className="mb-4 p-4 bg-red-950 border border-red-700 rounded-xl text-sm text-red-300">{error}</div>
       )}
 
       {/* Active job card */}
       {job && jobStatus && (
-        <div className="mt-5 p-5 bg-gray-900 border border-gray-800 rounded-2xl space-y-4 text-sm">
+        <div className="mt-2 p-5 bg-gray-900 border border-gray-800 rounded-2xl space-y-4 text-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium">
               <StatusDot status={jobStatus.status} />
@@ -263,20 +404,14 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
                 <span>✓</span>
                 <span>Adapter saved — ready to merge into <span className="font-medium">{profile.display_name}</span></span>
               </div>
-              <button
-                onClick={triggerMerge}
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors"
-              >
+              <button onClick={triggerMerge} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors">
                 Merge &amp; load into Ollama
               </button>
             </div>
           )}
 
           {jobStatus.status === 'merging' && (
-            <div className="flex items-center gap-3 text-blue-300">
-              <Spinner />
-              <span>Merging model…</span>
-            </div>
+            <div className="flex items-center gap-3 text-blue-300"><Spinner /><span>Merging model…</span></div>
           )}
 
           {jobStatus.status === 'merged' && (
@@ -300,9 +435,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
                   <pre className="mt-1.5 p-3 bg-red-950 border border-red-800 rounded-lg text-red-300 text-xs overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">{jobStatus.error}</pre>
                 </details>
               )}
-              <button onClick={triggerMerge} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors">
-                Retry merge
-              </button>
+              <button onClick={triggerMerge} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-xl transition-colors">Retry merge</button>
             </div>
           )}
 
@@ -317,9 +450,7 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
       {/* Job history */}
       {jobHistory.length > 0 && (
         <div className="mt-8">
-          <h3 className="text-sm font-semibold text-gray-400 mb-3">
-            Job History — {profile.display_name}
-          </h3>
+          <h3 className="text-sm font-semibold text-gray-400 mb-3">Job History — {profile.display_name}</h3>
           <div className="space-y-2">
             {jobHistory.map(j => (
               <div key={j.job_id} className="p-3 bg-gray-900 border border-gray-800 rounded-xl text-sm">
@@ -329,17 +460,13 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
                   <span className="flex-1 text-gray-400 truncate">{j.filename ?? 'unknown'}</span>
                   <span className="text-xs text-gray-500 capitalize shrink-0">{j.status.replace('_', ' ')}</span>
                   {j.created_at && (
-                    <span className="text-xs text-gray-600 shrink-0">
-                      {new Date(j.created_at).toLocaleString()}
-                    </span>
+                    <span className="text-xs text-gray-600 shrink-0">{new Date(j.created_at).toLocaleString()}</span>
                   )}
                   <button
                     onClick={() => deleteJob(j.job_id)}
                     title="Delete job"
-                    className="text-gray-600 hover:text-red-400 transition-colors shrink-0 text-base leading-none"
-                  >
-                    🗑
-                  </button>
+                    className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                  >🗑</button>
                 </div>
                 {j.error && (
                   <details className="mt-2">
@@ -356,6 +483,71 @@ export default function TrainingPage({ profile, onProfileUpdate }: Props) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function FileCard({ item, onRemove }: { item: SelectedFile; onRemove: () => void }) {
+  const v = item.validation
+
+  const statusIcon = v === null ? '⏳'
+    : v.valid === 0      ? '✕'
+    : v.invalid > 0      ? '⚠'
+    : '✓'
+
+  const statusColor = v === null ? 'text-gray-500'
+    : v.valid === 0      ? 'text-red-400'
+    : v.invalid > 0      ? 'text-amber-400'
+    : 'text-green-400'
+
+  const cardBorder = v === null ? 'border-gray-800'
+    : v.valid === 0      ? 'border-red-900/60'
+    : v.invalid > 0      ? 'border-amber-900/60'
+    : 'border-gray-800'
+
+  return (
+    <div className={`p-3 bg-gray-900 border ${cardBorder} rounded-xl text-sm`}>
+      <div className="flex items-start gap-2">
+        <span className={`mt-0.5 font-bold text-base leading-none ${statusColor}`}>{statusIcon}</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-gray-200 font-medium truncate">{item.file.name}</p>
+          {v === null && (
+            <p className="text-xs text-gray-500 mt-0.5">Validating…</p>
+          )}
+          {v !== null && (
+            <div className="mt-0.5 flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400">
+                <span className="text-green-400 font-medium">{v.valid.toLocaleString()}</span> valid
+                {v.invalid > 0 && (
+                  <> · <span className="text-amber-400 font-medium">{v.invalid}</span> invalid</>
+                )}
+              </span>
+              {v.format !== 'unknown' && (
+                <span className="px-1.5 py-0.5 bg-gray-800 text-gray-400 text-xs rounded font-mono">
+                  {FORMAT_LABEL[v.format]}
+                </span>
+              )}
+            </div>
+          )}
+          {v !== null && v.errors.length > 0 && (
+            <p className="text-xs text-amber-500/80 mt-1">
+              ⚠ Lines {v.errors.map(e => e.line).join(', ')}
+              {v.invalid > 5 && ` and ${v.invalid - 5} more`}: Invalid JSON
+            </p>
+          )}
+          {v !== null && v.valid === 0 && (
+            <p className="text-xs text-red-400 mt-1">No valid examples — this file cannot be used.</p>
+          )}
+        </div>
+        <button
+          onClick={onRemove}
+          className="text-gray-600 hover:text-red-400 transition-colors text-base leading-none mt-0.5 flex-shrink-0"
+        >🗑</button>
+      </div>
+    </div>
+  )
+}
+
 function StatusDot({ status }: { status: JobStatus }) {
   const colors: Record<JobStatus, string> = {
     queued:       'bg-yellow-500',
@@ -366,7 +558,7 @@ function StatusDot({ status }: { status: JobStatus }) {
     merged:       'bg-green-400',
     merge_failed: 'bg-red-500',
   }
-  return <span className={`w-2.5 h-2.5 rounded-full inline-block ${colors[status]}`} />
+  return <span className={`w-2.5 h-2.5 rounded-full inline-block flex-shrink-0 ${colors[status]}`} />
 }
 
 function Spinner() {
