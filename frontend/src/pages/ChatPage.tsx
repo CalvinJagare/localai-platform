@@ -265,9 +265,23 @@ export default function ChatPage({ profile, onMessageSent }: Props) {
         <>
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
             {messages.length === 0 && (
-              <p className="text-center text-gray-500 mt-16 text-sm">
-                Start chatting with {profile?.display_name}
-              </p>
+              <div className="flex flex-col items-center mt-16 gap-6">
+                <p className="text-gray-500 text-sm">
+                  Mission comms open with <span className="text-gray-300 font-medium">{profile?.display_name}</span>
+                </p>
+                <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+                  {['What can you help me with?', 'Summarise your training data', 'Tell me something unexpected', 'What are your capabilities?'].map(chip => (
+                    <button
+                      key={chip}
+                      onClick={() => setInput(chip)}
+                      className="px-3 py-1.5 text-xs text-gray-400 border border-gray-700 rounded-full
+                        hover:border-indigo-500/60 hover:text-indigo-300 transition-colors"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -342,7 +356,7 @@ export default function ChatPage({ profile, onMessageSent }: Props) {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                placeholder="Ground control to skAIler… (Enter to send, Shift+Enter for newline)"
                 rows={2}
                 disabled={streaming}
                 className="flex-1 resize-none bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
@@ -352,7 +366,7 @@ export default function ChatPage({ profile, onMessageSent }: Props) {
                 disabled={streaming || !input.trim()}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
               >
-                {streaming ? '…' : 'Send'}
+                {streaming ? '…' : 'Transmit ▶'}
               </button>
             </div>
           </div>

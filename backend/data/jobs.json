@@ -1,1 +1,16 @@
-{}
+{
+  "4f1ba912-4b45-4cf5-bdaf-a7cabec2c9e1": {
+    "status": "merged",
+    "progress": 100,
+    "error": null,
+    "filename": "nexus_training_v2.jsonl",
+    "data_file": "4f1ba912-4b45-4cf5-bdaf-a7cabec2c9e1_nexus_training_v2.jsonl",
+    "model_name": "base",
+    "profile_id": "6a2699f5-dda8-4a7a-a808-6d666f65c2bf",
+    "base_model_override": null,
+    "epochs": 1,
+    "created_at": "2026-04-20T19:42:24.543451+00:00",
+    "merge_step": "Registering model in Ollama\u2026",
+    "ollama_model": "base"
+  }
+}

@@ -131,6 +131,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 _jobs_lock = threading.Lock()
+_cancel_flags: dict[str, threading.Event] = {}
 
 
 def _load_jobs() -> dict[str, dict]:
@@ -667,6 +668,8 @@ def run_training(job_id: str, data_path: Path) -> None:
     Loads the configured base model with Unsloth, fine-tunes with QLoRA, saves the adapter.
     If base_model_override is set on the job, trains on top of that model instead.
     """
+    cancel_event = threading.Event()
+    _cancel_flags[job_id] = cancel_event
     _update_job(job_id, status="training")
     output_dir = MODELS_DIR / job_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -729,6 +732,9 @@ def run_training(job_id: str, data_path: Path) -> None:
 
         class ProgressCallback(TrainerCallback):
             def on_step_end(self, args, state, control, **kwargs):
+                if cancel_event.is_set():
+                    control.should_training_stop = True
+                    return control
                 if state.max_steps > 0:
                     pct = min(int(state.global_step / state.max_steps * 100), 99)
                     if pct >= last_pct[0] + 5:
@@ -767,6 +773,10 @@ def run_training(job_id: str, data_path: Path) -> None:
 
         trainer.train()
 
+        if cancel_event.is_set():
+            _update_job(job_id, status="cancelled", error=None)
+            return
+
         # -- Save adapter to /data/models/{job_id}/ ---------------------------
         model.save_pretrained(str(output_dir))
         tokenizer.save_pretrained(str(output_dir))
@@ -774,7 +784,11 @@ def run_training(job_id: str, data_path: Path) -> None:
         _update_job(job_id, status="complete", progress=100, error=None)
 
     except Exception:
-        _update_job(job_id, status="failed", error=traceback.format_exc())
+        if not cancel_event.is_set():
+            _update_job(job_id, status="failed", error=traceback.format_exc())
+
+    finally:
+        _cancel_flags.pop(job_id, None)
 
 
 def run_merge(job_id: str) -> None:
@@ -1094,6 +1108,7 @@ async def train(
             "progress": 0,
             "error": None,
             "filename": file.filename,
+            "data_file": dest.name,
             "model_name": model_name,
             "profile_id": resolved_profile_id,
             "base_model_override": base_model_override,
@@ -1140,6 +1155,7 @@ async def train_from_file(body: TrainFromFileRequest, background_tasks: Backgrou
             "progress": 0,
             "error": None,
             "filename": display_name,
+            "data_file": safe,
             "model_name": model_name,
             "profile_id": resolved_profile_id,
             "base_model_override": base_model_override,
@@ -1210,6 +1226,69 @@ async def delete_job(job_id: str):
             pass
 
     return {"deleted": job_id}
+
+
+@app.post("/train/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """Cancel a queued or active training job."""
+    with _jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        status = jobs[job_id]["status"]
+
+    if status == "queued":
+        _update_job(job_id, status="cancelled", error=None)
+        return {"status": "cancelled"}
+
+    if status == "training":
+        flag = _cancel_flags.get(job_id)
+        if flag:
+            flag.set()
+        return {"status": "cancelling"}
+
+    raise HTTPException(status_code=400, detail=f"Cannot cancel job in status: {status}")
+
+
+@app.post("/train/{job_id}/rerun")
+async def rerun_job(job_id: str, background_tasks: BackgroundTasks):
+    """Create a new training job using the same file and settings as an existing job."""
+    with _jobs_lock:
+        if job_id not in jobs:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        original = dict(jobs[job_id])
+
+    data_file = original.get("data_file")
+    if not data_file:
+        raise HTTPException(status_code=400, detail="No training file associated with this job.")
+
+    data_path = TRAINING_DIR / data_file
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail="Training file no longer exists.")
+
+    new_job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        jobs[new_job_id] = {
+            "status": "queued",
+            "progress": 0,
+            "error": None,
+            "filename": original.get("filename"),
+            "data_file": data_file,
+            "model_name": original.get("model_name"),
+            "profile_id": original.get("profile_id"),
+            "base_model_override": original.get("base_model_override"),
+            "epochs": original.get("epochs", 3),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_jobs()
+    background_tasks.add_task(run_training, new_job_id, data_path)
+
+    return {
+        "job_id": new_job_id,
+        "filename": original.get("filename"),
+        "size_bytes": None,
+        "status": "queued",
+        "base_model_override": original.get("base_model_override"),
+    }
 
 
 @app.post("/train/{job_id}/merge")

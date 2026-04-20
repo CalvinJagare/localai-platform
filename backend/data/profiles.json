@@ -3,7 +3,7 @@
     "slug": "base",
     "display_name": "Base",
     "color": "indigo",
-    "current_model": null,
+    "current_model": "base",
     "base_profile_id": null,
     "created_at": "2026-04-20T00:58:47.156073+00:00"
   },

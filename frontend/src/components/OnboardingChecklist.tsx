@@ -36,7 +36,7 @@ export default function OnboardingChecklist({ progress, onNavigate, onDismiss }:
   }, [allDone, onDismiss])
 
   return (
-    <div className="border-t border-gray-800 px-3 py-3">
+    <div className="px-3 py-2 border border-gray-700/50 rounded-lg mx-1 mb-1" style={{ background: 'rgba(99,102,241,0.04)' }}>
       {/* Header row */}
       <div className="flex items-center justify-between mb-2">
         <button

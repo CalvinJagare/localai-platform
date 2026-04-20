@@ -9,7 +9,7 @@ import { useToast } from '../components/Toast'
 
 type JobStatus =
   | 'queued' | 'training' | 'complete' | 'failed'
-  | 'merging' | 'merged' | 'merge_failed'
+  | 'merging' | 'merged' | 'merge_failed' | 'cancelled'
 
 type DataFormat = 'chat' | 'instruction' | 'text' | 'mixed' | 'unknown'
 
@@ -47,6 +47,7 @@ interface StatusResult {
 interface JobRecord {
   job_id: string
   filename?: string
+  data_file?: string
   status: JobStatus
   progress: number
   error: string | null
@@ -70,7 +71,7 @@ interface QueueItem {
   epochs: number
 }
 
-const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed']
+const TERMINAL: JobStatus[] = ['complete', 'failed', 'merged', 'merge_failed', 'cancelled']
 
 const FORMAT_LABEL: Record<DataFormat, string> = {
   chat: 'chat', instruction: 'instruction', text: 'text', mixed: 'mixed', unknown: 'unknown',
@@ -154,7 +155,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
   const [autoMerge, setAutoMerge]               = useState(false)
   const trainStartMsRef = useRef<number | null>(null)
 
-  // Queue state
+  // Queue state — persisted per profile
   const [queue, setQueue]             = useState<QueueItem[]>([])
   const [queueRunning, setQueueRunning] = useState(false)
   const [dataFiles, setDataFiles]     = useState<DataFile[]>([])
@@ -188,7 +189,16 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
     setContinueTraining(true); setQueueRunning(false)
     trainStartMsRef.current = null
     fetchHistory()
+    try {
+      const raw = localStorage.getItem(`training_queue_${profile?.id}`)
+      setQueue(raw ? JSON.parse(raw) : [])
+    } catch { setQueue([]) }
   }, [profile?.id])
+
+  useEffect(() => {
+    if (!profile) return
+    localStorage.setItem(`training_queue_${profile.id}`, JSON.stringify(queue))
+  }, [queue, profile?.id])
 
   useEffect(() => {
     if (queueOpen) fetchDataFiles()
@@ -380,6 +390,34 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
       setJobHistory(prev => prev.filter(j => j.job_id !== jobId))
     } catch (err) {
       setError(`Delete failed: ${String(err)}`)
+    }
+  }
+
+  async function cancelJob() {
+    if (!job) return
+    try {
+      const resp = await fetch(`${API}/train/${job.job_id}/cancel`, { method: 'POST' })
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
+      setJobStatus(prev => prev ? { ...prev, status: 'cancelled' } : null)
+      setQueueRunning(false)
+      fetchHistory()
+    } catch (err) {
+      setError(`Cancel failed: ${String(err)}`)
+    }
+  }
+
+  async function rerunJob(jobId: string) {
+    if (!profile) return
+    setError(null)
+    try {
+      const resp = await fetch(`${API}/train/${jobId}/rerun`, { method: 'POST' })
+      if (!resp.ok) throw new Error((await resp.json()).detail ?? resp.statusText)
+      const result: UploadResult = await resp.json()
+      setJob(result)
+      setJobStatus({ status: result.status, progress: 0, error: null })
+      fetchHistory()
+    } catch (err) {
+      setError(`Re-run failed: ${String(err)}`)
     }
   }
 
@@ -580,7 +618,17 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                 <span className="text-xs text-indigo-400 font-normal">· {queue.length} more queued</span>
               )}
             </div>
-            <span className="text-xs text-gray-500 font-mono">{job.job_id.slice(0, 8)}…</span>
+            <div className="flex items-center gap-2">
+              {(jobStatus.status === 'queued' || jobStatus.status === 'training') && (
+                <button
+                  onClick={cancelJob}
+                  className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+                >
+                  Cancel
+                </button>
+              )}
+              <span className="text-xs text-gray-500 font-mono">{job.job_id.slice(0, 8)}…</span>
+            </div>
           </div>
 
           {(jobStatus.status === 'queued' || jobStatus.status === 'training') && (
@@ -634,6 +682,10 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
             <div className="p-3 bg-green-950 border border-green-700 rounded-xl text-green-300 text-sm">
               🎉 <span className="font-medium">{profile.display_name}</span> is ready — switch to Chat to start talking.
             </div>
+          )}
+
+          {jobStatus.status === 'cancelled' && (
+            <p className="text-sm text-gray-400">Training cancelled.</p>
           )}
 
           {jobStatus.status === 'failed' && jobStatus.error && (
@@ -775,6 +827,13 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                   {j.created_at && (
                     <span className="text-xs text-gray-600 shrink-0">{new Date(j.created_at).toLocaleString()}</span>
                   )}
+                  {j.data_file && !isActive && (
+                    <button
+                      onClick={() => rerunJob(j.job_id)}
+                      title="Re-run with same file and settings"
+                      className="text-xs text-gray-600 hover:text-indigo-400 transition-colors shrink-0 font-mono"
+                    >↺</button>
+                  )}
                   <button
                     onClick={() => deleteJob(j.job_id)}
                     title="Delete job"
@@ -854,6 +913,7 @@ function StatusDot({ status }: { status: JobStatus }) {
     merging:      'bg-purple-500 animate-pulse',
     merged:       'bg-green-400',
     merge_failed: 'bg-red-500',
+    cancelled:    'bg-gray-500',
   }
   return <span className={`w-2.5 h-2.5 rounded-full inline-block flex-shrink-0 ${colors[status]}`} />
 }

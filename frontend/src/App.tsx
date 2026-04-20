@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import Sidebar from './components/Sidebar'
 import SplashScreen from './components/SplashScreen'
+import StarField from './components/StarField'
+import TopBar from './components/TopBar'
 import ChatPage from './pages/ChatPage'
 import TrainingPage from './pages/TrainingPage'
 import DataPage from './pages/DataPage'
@@ -43,6 +45,10 @@ function loadProgress(): OnboardingProgress {
   } catch { /* fall through */ }
   return { profile: false, data: false, training: false, chat: false }
 }
+
+const NAV_ORDER: Page[] = [
+  'chat', 'training', 'instructions', 'documents', 'data', 'profiles', 'models', 'health', 'settings',
+]
 
 export default function App() {
   const [page, setPage]           = useState<Page>('chat')
@@ -89,16 +95,19 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'ready') return
     fetch(`${API}/profiles`)
-      .then(r => r.json())
-      .then((data: Profile[]) => {
-        setProfiles(data)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then((data: unknown) => {
+        if (!Array.isArray(data)) return
+        setProfiles(data as Profile[])
         if (!selectedProfileId && data.length > 0)
-          selectProfile(data[0].id)
+          selectProfile((data as Profile[])[0].id)
       })
       .catch(() => {})
   }, [phase])
 
-  const selectedProfile = profiles.find(p => p.id === selectedProfileId) ?? null
+  const selectedProfile = Array.isArray(profiles)
+    ? (profiles.find(p => p.id === selectedProfileId) ?? null)
+    : null
 
   // Tauri splash / event wiring
   useEffect(() => {
@@ -143,10 +152,36 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      const idx = parseInt(e.key) - 1
+      if (idx >= 0 && idx < NAV_ORDER.length) setPage(NAV_ORDER[idx])
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   if (phase === 'loading') return <SplashScreen statusText={status} />
 
   if (phase === 'ready' && !setupDone) {
-    return <SetupWizard onComplete={() => { setSetupDone(true); window.location.reload() }} />
+    return (
+      <SetupWizard
+        onComplete={() => {
+          setSetupDone(true)
+          // Re-read API URL from localStorage (written by SetupWizard) without a full page reload.
+          // We reload only if the saved URL differs from what the module-level API constant captured,
+          // which happens on remote installs. Local installs keep http://localhost:8000 either way.
+          const saved = localStorage.getItem('skailer_server')
+          if (saved) {
+            try {
+              const { url } = JSON.parse(saved) as { url: string }
+              if (!url.includes('localhost:8000')) { window.location.reload(); return }
+            } catch { /* fall through */ }
+          }
+        }}
+      />
+    )
   }
 
   if (phase === 'unreachable') {
@@ -184,50 +219,55 @@ export default function App() {
 
   return (
     <ToastProvider>
-    <div className="flex h-screen bg-gray-950 text-gray-100">
-      <Sidebar
-        current={page}
-        onNavigate={setPage}
-        profiles={profiles}
-        selectedProfileId={selectedProfileId}
-        onSelectProfile={selectProfile}
-        onProfilesChange={setProfiles}
-        onboardingProgress={showOnboarding ? effectiveProgress : null}
-        onOnboardingDismiss={dismissOnboarding}
-      />
-      <main className="flex-1 overflow-auto">
-        {page === 'chat' && (
-          <ChatPage
-            profile={selectedProfile}
-            onMessageSent={() => tickOnboarding('chat')}
-          />
-        )}
-        {page === 'training' && (
-          <TrainingPage
-            profile={selectedProfile}
-            profiles={profiles}
-            onProfileUpdate={(updated) =>
-              setProfiles(ps => ps.map(p => p.id === updated.id ? updated : p))
-            }
-            onDataAdded={() => tickOnboarding('data')}
-            onTrainingStarted={() => tickOnboarding('training')}
-          />
-        )}
-        {page === 'data'     && <DataPage onDataAdded={() => tickOnboarding('data')} />}
-        {page === 'profiles' && (
-          <ProfilesPage
-            profiles={profiles}
-            onProfilesChange={setProfiles}
-            onSelectProfile={selectProfile}
-          />
-        )}
-        {page === 'instructions' && <InstructionsPage profile={selectedProfile} />}
-        {page === 'documents'    && <DocumentsPage profile={selectedProfile} />}
-        {page === 'models'       && <ModelsPage profiles={profiles} onProfilesChange={setProfiles} />}
-        {page === 'settings'     && <SettingsPage />}
-        {page === 'health'       && <HealthPage />}
-      </main>
-    </div>
+      <StarField />
+      <div
+        className="relative z-10 h-screen bg-gray-950 text-gray-100 grid"
+        style={{ gridTemplateRows: '48px 1fr', gridTemplateColumns: '228px 1fr' }}
+      >
+        <TopBar page={page} />
+        <Sidebar
+          current={page}
+          onNavigate={setPage}
+          profiles={profiles}
+          selectedProfileId={selectedProfileId}
+          onSelectProfile={selectProfile}
+          onProfilesChange={setProfiles}
+          onboardingProgress={showOnboarding ? effectiveProgress : null}
+          onOnboardingDismiss={dismissOnboarding}
+        />
+        <main className="overflow-auto">
+          {page === 'chat' && (
+            <ChatPage
+              profile={selectedProfile}
+              onMessageSent={() => tickOnboarding('chat')}
+            />
+          )}
+          {page === 'training' && (
+            <TrainingPage
+              profile={selectedProfile}
+              profiles={profiles}
+              onProfileUpdate={(updated) =>
+                setProfiles(ps => ps.map(p => p.id === updated.id ? updated : p))
+              }
+              onDataAdded={() => tickOnboarding('data')}
+              onTrainingStarted={() => tickOnboarding('training')}
+            />
+          )}
+          {page === 'data'     && <DataPage onDataAdded={() => tickOnboarding('data')} />}
+          {page === 'profiles' && (
+            <ProfilesPage
+              profiles={profiles}
+              onProfilesChange={setProfiles}
+              onSelectProfile={selectProfile}
+            />
+          )}
+          {page === 'instructions' && <InstructionsPage profile={selectedProfile} />}
+          {page === 'documents'    && <DocumentsPage profile={selectedProfile} />}
+          {page === 'models'       && <ModelsPage profiles={profiles} onProfilesChange={setProfiles} />}
+          {page === 'settings'     && <SettingsPage />}
+          {page === 'health'       && <HealthPage />}
+        </main>
+      </div>
     </ToastProvider>
   )
 }

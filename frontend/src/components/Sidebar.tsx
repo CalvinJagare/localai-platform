@@ -1,7 +1,7 @@
 import type { Page, Profile } from '../App'
-import { getApi } from '../lib/server'
 import ProfileSelector from './ProfileSelector'
 import OnboardingChecklist, { type OnboardingProgress } from './OnboardingChecklist'
+import Astronaut, { type AstronautMode } from './Astronaut'
 
 interface Props {
   current: Page
@@ -14,26 +14,32 @@ interface Props {
   onOnboardingDismiss: () => void
 }
 
-const links: { id: Page; label: string; icon: string }[] = [
-  { id: 'chat',         label: 'Chat',         icon: '💬' },
-  { id: 'training',     label: 'Training',     icon: '🧠' },
-  { id: 'instructions', label: 'Instructions', icon: '📋' },
-  { id: 'documents',    label: 'Documents',    icon: '📄' },
-  { id: 'data',         label: 'Data',         icon: '🗂️' },
-  { id: 'profiles',     label: 'Profiles',     icon: '👤' },
-  { id: 'models',       label: 'Models',       icon: '🤖' },
-  { id: 'health',       label: 'Health',       icon: '📊' },
-  { id: 'settings',     label: 'Settings',     icon: '⚙️'  },
+const NAV_LINKS: { id: Page; label: string; icon: string }[] = [
+  { id: 'chat',         label: 'Chat',         icon: '◉' },
+  { id: 'training',     label: 'Training',     icon: '◎' },
+  { id: 'instructions', label: 'Instructions', icon: '◈' },
+  { id: 'documents',    label: 'Documents',    icon: '◌' },
+  { id: 'data',         label: 'Data',         icon: '◍' },
+  { id: 'profiles',     label: 'Profiles',     icon: '◈' },
+  { id: 'models',       label: 'Models',       icon: '◉' },
+  { id: 'health',       label: 'Health',       icon: '◍' },
+  { id: 'settings',     label: 'Settings',     icon: '⊙'  },
 ]
 
-export default function Sidebar({ current, onNavigate, profiles, selectedProfileId, onSelectProfile, onProfilesChange, onboardingProgress, onOnboardingDismiss }: Props) {
+const PAGE_MODE: Partial<Record<Page, AstronautMode>> = {
+  training: 'training',
+  health:   'idle',
+}
+
+export default function Sidebar({
+  current, onNavigate,
+  profiles, selectedProfileId, onSelectProfile, onProfilesChange,
+  onboardingProgress, onOnboardingDismiss,
+}: Props) {
+  const astronautMode: AstronautMode = PAGE_MODE[current] ?? 'idle'
+
   return (
-    <aside className="w-52 bg-gray-900 border-r border-gray-800 flex flex-col">
-      {/* data-tauri-drag-region: allows dragging the frameless window from this header area */}
-      <div data-tauri-drag-region className="px-4 py-4 border-b border-gray-800 cursor-default">
-        <h1 className="text-lg font-bold text-white pointer-events-none">skAIler</h1>
-        <p className="text-xs text-gray-400 mt-0.5 pointer-events-none">Platform</p>
-      </div>
+    <aside className="bg-gray-900 border-r border-gray-700 flex flex-col overflow-hidden relative z-20">
 
       <ProfileSelector
         profiles={profiles}
@@ -42,33 +48,47 @@ export default function Sidebar({ current, onNavigate, profiles, selectedProfile
         onProfilesChange={onProfilesChange}
       />
 
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-        {links.map(({ id, label, icon }) => (
+      {/* ── Navigation ────────────────────────────────────────── */}
+      <div
+        className="px-5 pt-4 pb-1 text-[9px] font-mono tracking-[3px] uppercase text-gray-500"
+      >
+        Navigation
+      </div>
+
+      <nav className="px-2 space-y-0.5">
+        {NAV_LINKS.map(({ id, label, icon }) => (
           <button
             key={id}
             onClick={() => onNavigate(id)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer
+            className={`nav-item w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium
+              transition-colors cursor-pointer border-l-2
               ${current === id
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
+                ? 'active border-indigo-400 text-indigo-300 bg-indigo-500/[0.08]'
+                : 'border-transparent text-gray-500 hover:text-gray-100'}`}
           >
-            <span>{icon}</span>
+            <span className="w-4 text-center flex-shrink-0 text-[13px]">{icon}</span>
             {label}
           </button>
         ))}
       </nav>
 
-      {/* Onboarding checklist — shown until dismissed */}
-      {onboardingProgress && (
-        <OnboardingChecklist
-          progress={onboardingProgress}
-          onNavigate={onNavigate}
-          onDismiss={onOnboardingDismiss}
-        />
-      )}
-
-      <div className="px-4 py-3 border-t border-gray-800 text-xs text-gray-600 truncate">
-        {getApi()}
+      {/* ── Astronaut + onboarding checklist ─────────────────── */}
+      <div className="mt-auto">
+        <Astronaut mode={astronautMode} />
+        {onboardingProgress && (
+          <>
+            <div className="px-5 pt-1 pb-1 text-[9px] font-mono tracking-[3px] uppercase text-gray-500">
+              Setup
+            </div>
+            <div className="px-2 mb-2">
+              <OnboardingChecklist
+                progress={onboardingProgress}
+                onNavigate={onNavigate}
+                onDismiss={onOnboardingDismiss}
+              />
+            </div>
+          </>
+        )}
       </div>
     </aside>
   )
