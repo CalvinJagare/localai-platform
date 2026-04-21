@@ -191,7 +191,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
             ))}
           </div>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Base profile <span className="text-gray-600">(optional — inherit shared training)</span></label>
+            <label className="text-xs text-gray-400 block mb-1">Base profile <span className="text-gray-500">(optional — inherit shared training)</span></label>
             <BaseSelect value={newBase} onChange={setNewBase} options={profiles} />
           </div>
           <ToolToggles tools={availableTools} enabled={newTools} onChange={t => toggleTool(t, newTools, setNewTools)} />
@@ -265,7 +265,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
                       {p.current_model ? (
                         <p>Model: <span className="font-mono text-gray-400">{p.current_model}</span></p>
                       ) : (
-                        <p className="text-gray-600">No model trained yet</p>
+                        <p className="text-gray-500">No model trained yet</p>
                       )}
                       {baseName && (
                         <p>Base: <span className="text-gray-400">{baseName}</span></p>
@@ -283,7 +283,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
                         </div>
                       )}
                       <p>{p.job_count} training {p.job_count === 1 ? 'job' : 'jobs'}</p>
-                      <p className="font-mono text-gray-700">slug: {p.slug}</p>
+                      <p className="font-mono text-gray-500">slug: {p.slug}</p>
                     </div>
                   )}
                 </div>
@@ -313,7 +313,7 @@ export default function ProfilesPage({ profiles, onProfilesChange, onSelectProfi
         })}
 
         {profiles.length === 0 && (
-          <p className="text-center text-gray-600 py-12 text-sm">No profiles yet — create one above.</p>
+          <p className="text-center text-gray-500 py-12 text-sm">No profiles yet — create one above.</p>
         )}
       </div>
     </div>
@@ -346,13 +346,13 @@ function ToolToggles({ tools, enabled, onChange }: {
                 {needsKey && (
                   <span className="ml-1.5 text-xs text-amber-500">⚠ API key required</span>
                 )}
-                <p className="text-xs text-gray-600 mt-0.5">{tool.description}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{tool.description}</p>
               </div>
             </label>
           )
         })}
       </div>
-      <p className="mt-2 text-xs text-gray-700">Want a new tool? Just ask Claude Code — new tools take ~5 minutes to add.</p>
+      <p className="mt-2 text-xs text-gray-500">Want a new tool? Just ask Claude Code — new tools take ~5 minutes to add.</p>
     </div>
   )
 }

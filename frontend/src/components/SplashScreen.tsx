@@ -78,7 +78,7 @@ export default function SplashScreen({ statusText }: Props) {
           <div className="text-[32px] font-bold tracking-tight leading-none mb-1 text-white">
             sk<span style={{ color: '#818cf8', textShadow: '0 0 18px rgba(129,132,248,.6)' }}>AI</span>ler
           </div>
-          <div className="text-[11px] tracking-[3px] uppercase font-mono" style={{ color: '#4a5580' }}>
+          <div className="text-[11px] tracking-[3px] uppercase font-mono" style={{ color: '#7886b8' }}>
             Your AI at your fingertips
           </div>
         </div>
@@ -98,7 +98,7 @@ export default function SplashScreen({ statusText }: Props) {
         {/* Status text */}
         <p
           className="text-[12px] font-mono min-h-[1.25rem] text-center transition-all duration-300"
-          style={{ color: '#4a5580' }}
+          style={{ color: '#7886b8' }}
         >
           {statusText}
         </p>

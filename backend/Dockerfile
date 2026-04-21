@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --break-system-packages torch --index-url https://download.pytorch.org/whl/cu128
+RUN pip install --break-system-packages torch --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --break-system-packages -r requirements.txt
 
 COPY . .

@@ -223,7 +223,7 @@ export default function ChatPage({ profile, onMessageSent }: Props) {
             <span className="text-gray-200 font-medium">{profile.display_name}</span>
             {profile.current_model && (
               <>
-                <span className="text-gray-600">·</span>
+                <span className="text-gray-500">·</span>
                 <span className="font-mono text-xs text-gray-400">{profile.current_model}</span>
               </>
             )}

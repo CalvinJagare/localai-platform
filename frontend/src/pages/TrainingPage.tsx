@@ -517,7 +517,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
               </button>
             ))}
           </div>
-          <span className="text-xs text-gray-600">
+          <span className="text-xs text-gray-500">
             {epochs === 1 ? 'Fast pass' : epochs <= 3 ? 'Standard' : epochs <= 5 ? 'Thorough' : 'Deep — risk overfitting'}
           </span>
         </div>
@@ -771,12 +771,12 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                 <div className="space-y-1.5">
                   {queue.map((item, idx) => (
                     <div key={item.id} className="flex items-center gap-3 px-3 py-2 bg-gray-900 border border-gray-800 rounded-xl text-xs">
-                      <span className="text-gray-600 w-4 shrink-0">{idx + 1}.</span>
+                      <span className="text-gray-500 w-4 shrink-0">{idx + 1}.</span>
                       <span className="flex-1 text-gray-300 truncate">{item.displayName}</span>
                       <span className="text-gray-500 shrink-0">{item.epochs} epoch{item.epochs !== 1 ? 's' : ''}</span>
                       <button
                         onClick={() => setQueue(prev => prev.filter(i => i.id !== item.id))}
-                        className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                        className="text-gray-500 hover:text-red-400 transition-colors shrink-0"
                       >×</button>
                     </div>
                   ))}
@@ -787,7 +787,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                   </span>
                   <button
                     onClick={() => setQueue([])}
-                    className="text-gray-600 hover:text-red-400 transition-colors"
+                    className="text-gray-500 hover:text-red-400 transition-colors"
                   >
                     Clear all
                   </button>
@@ -801,7 +801,7 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                 </button>
               </>
             ) : (
-              <p className="text-xs text-gray-600 text-center py-3">
+              <p className="text-xs text-gray-500 text-center py-3">
                 Queue is empty — add runs above, then click Run Queue.
               </p>
             )}
@@ -821,23 +821,23 @@ export default function TrainingPage({ profile, profiles = [], onProfileUpdate, 
                   <span className="font-mono text-xs text-gray-500">{j.job_id.slice(0, 8)}…</span>
                   <span className="flex-1 text-gray-400 truncate">{j.filename ?? 'unknown'}</span>
                   {j.epochs != null && j.epochs !== 3 && (
-                    <span className="text-xs text-gray-600 shrink-0">{j.epochs}ep</span>
+                    <span className="text-xs text-gray-500 shrink-0">{j.epochs}ep</span>
                   )}
                   <span className="text-xs text-gray-500 capitalize shrink-0">{j.status.replace('_', ' ')}</span>
                   {j.created_at && (
-                    <span className="text-xs text-gray-600 shrink-0">{new Date(j.created_at).toLocaleString()}</span>
+                    <span className="text-xs text-gray-500 shrink-0">{new Date(j.created_at).toLocaleString()}</span>
                   )}
                   {j.data_file && !isActive && (
                     <button
                       onClick={() => rerunJob(j.job_id)}
                       title="Re-run with same file and settings"
-                      className="text-xs text-gray-600 hover:text-indigo-400 transition-colors shrink-0 font-mono"
+                      className="text-xs text-gray-500 hover:text-indigo-400 transition-colors shrink-0 font-mono"
                     >↺</button>
                   )}
                   <button
                     onClick={() => deleteJob(j.job_id)}
                     title="Delete job"
-                    className="text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                    className="text-gray-500 hover:text-red-400 transition-colors shrink-0"
                   >🗑</button>
                 </div>
                 {j.error && (
@@ -898,7 +898,7 @@ function FileCard({ item, onRemove }: { item: SelectedFile; onRemove: () => void
             <p className="text-xs text-red-400 mt-1">No valid examples — this file cannot be used.</p>
           )}
         </div>
-        <button onClick={onRemove} className="text-gray-600 hover:text-red-400 transition-colors text-base leading-none mt-0.5 flex-shrink-0">🗑</button>
+        <button onClick={onRemove} className="text-gray-500 hover:text-red-400 transition-colors text-base leading-none mt-0.5 flex-shrink-0">🗑</button>
       </div>
     </div>
   )

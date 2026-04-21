@@ -47,12 +47,12 @@ export default function OnboardingChecklist({ progress, onNavigate, onDismiss }:
           {allDone ? (
             <span className="text-green-400">You're all set!</span>
           ) : (
-            <span>Getting started <span className="text-gray-600 font-normal">({done}/{total})</span></span>
+            <span>Getting started <span className="text-gray-500 font-normal">({done}/{total})</span></span>
           )}
         </button>
         <button
           onClick={onDismiss}
-          className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
+          className="text-xs text-gray-500 hover:text-gray-400 transition-colors"
         >
           Dismiss
         </button>
@@ -80,7 +80,7 @@ export default function OnboardingChecklist({ progress, onNavigate, onDismiss }:
                 }`}>
                   {checked && <span className="text-[9px] leading-none">✓</span>}
                 </span>
-                <span className={`text-xs flex-1 ${checked ? 'text-gray-600 line-through' : 'text-gray-300'}`}>
+                <span className={`text-xs flex-1 ${checked ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
                   {label}
                 </span>
                 {!checked && (

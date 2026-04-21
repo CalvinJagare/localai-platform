@@ -227,11 +227,11 @@ export default function SettingsPage() {
                       Get API key →
                     </a>
                   </div>
-                  <span className="text-xs text-gray-600 shrink-0 mt-0.5">Used by: {def.used_by}</span>
+                  <span className="text-xs text-gray-500 shrink-0 mt-0.5">Used by: {def.used_by}</span>
                 </div>
 
                 {isConfigured && (
-                  <p className="text-xs font-mono text-gray-600">{currentMasked}</p>
+                  <p className="text-xs font-mono text-gray-500">{currentMasked}</p>
                 )}
 
                 <input
@@ -239,7 +239,7 @@ export default function SettingsPage() {
                   value={inputs[def.key] ?? ''}
                   onChange={e => setInputs(prev => ({ ...prev, [def.key]: e.target.value }))}
                   placeholder={isConfigured ? 'Enter new value to replace…' : 'Paste API key…'}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                 />
               </div>
             )
@@ -286,12 +286,12 @@ export default function SettingsPage() {
 
                 {activeValue && (
                   <p className="text-xs font-mono text-gray-500">
-                    <span className="text-gray-600">active now: </span>{activeValue}
+                    <span className="text-gray-500">active now: </span>{activeValue}
                   </p>
                 )}
                 {savedValue && savedValue !== activeValue && (
                   <p className="text-xs font-mono text-amber-600">
-                    <span className="text-gray-600">saved (pending restart): </span>{savedValue}
+                    <span className="text-gray-500">saved (pending restart): </span>{savedValue}
                   </p>
                 )}
 
@@ -300,7 +300,7 @@ export default function SettingsPage() {
                   value={inputValue}
                   onChange={e => setInputs(prev => ({ ...prev, [def.key]: e.target.value }))}
                   placeholder={activeValue || def.default}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                 />
               </div>
             )

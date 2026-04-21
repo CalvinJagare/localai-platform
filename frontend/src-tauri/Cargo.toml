@@ -1,10 +1,10 @@
 [package]
-name = "localai-platform"
+name = "skailer"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "localai-platform"
+name = "skailer"
 path = "src/main.rs"
 
 [build-dependencies]

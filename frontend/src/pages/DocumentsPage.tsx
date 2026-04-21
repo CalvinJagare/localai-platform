@@ -184,7 +184,7 @@ export default function DocumentsPage({ profile }: Props) {
       )}
 
       {docs.length === 0 && !uploading && (
-        <p className="text-center text-gray-600 py-8 text-sm">No documents yet — drop a file above to get started.</p>
+        <p className="text-center text-gray-500 py-8 text-sm">No documents yet — drop a file above to get started.</p>
       )}
 
       {docs.length > 0 && (

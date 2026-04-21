@@ -196,7 +196,7 @@ export default function InstructionsPage({ profile }: Props) {
             onChange={e => setNewContent(e.target.value)}
             placeholder={`# Instructions\n\nYou are a helpful assistant for ${profile.display_name}.\n\nAlways respond in a professional tone.`}
             rows={10}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono resize-y"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono resize-y"
           />
           <div className="flex gap-2">
             <button
@@ -220,10 +220,10 @@ export default function InstructionsPage({ profile }: Props) {
       {loading ? (
         <p className="text-sm text-gray-500">Loading…</p>
       ) : files.length === 0 && !creating ? (
-        <div className="text-center py-16 text-sm text-gray-600">
+        <div className="text-center py-16 text-sm text-gray-500">
           <p className="text-2xl mb-3">📋</p>
           <p>No instructions yet.</p>
-          <p className="mt-1 text-gray-700">Create one above or upload a .md file.</p>
+          <p className="mt-1 text-gray-500">Create one above or upload a .md file.</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -238,7 +238,7 @@ export default function InstructionsPage({ profile }: Props) {
                 >
                   <span className="text-gray-500 text-xs">{expanded === f.filename ? '▾' : '▸'}</span>
                   <span className="font-mono text-sm text-gray-200 font-medium truncate">{f.filename}</span>
-                  <span className="text-xs text-gray-600 shrink-0">{f.word_count} words</span>
+                  <span className="text-xs text-gray-500 shrink-0">{f.word_count} words</span>
                 </button>
                 <div className="flex gap-1 shrink-0">
                   <button
@@ -251,7 +251,7 @@ export default function InstructionsPage({ profile }: Props) {
                   <button
                     onClick={() => deleteFile(f.filename)}
                     title="Delete"
-                    className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
+                    className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-gray-800 rounded-lg transition-colors"
                   >
                     🗑
                   </button>
@@ -288,7 +288,7 @@ export default function InstructionsPage({ profile }: Props) {
                     </div>
                   ) : (
                     <pre className="px-4 py-3 text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto">
-                      {f.content || <span className="text-gray-600 italic">Empty file</span>}
+                      {f.content || <span className="text-gray-500 italic">Empty file</span>}
                     </pre>
                   )}
                 </div>
@@ -299,7 +299,7 @@ export default function InstructionsPage({ profile }: Props) {
       )}
 
       {files.length > 0 && (
-        <p className="mt-4 text-xs text-gray-600">
+        <p className="mt-4 text-xs text-gray-500">
           Files are injected in alphabetical order — prefix filenames with numbers to control order (e.g. <span className="font-mono">01_tone.md</span>, <span className="font-mono">02_products.md</span>).
         </p>
       )}

@@ -99,7 +99,7 @@ export default function ModelsPage({ profiles, onProfilesChange }: Props) {
       {loading ? (
         <p className="text-sm text-gray-500">Loading…</p>
       ) : models.length === 0 ? (
-        <p className="text-center text-gray-600 py-16 text-sm">No models in Ollama yet — train and merge a profile first.</p>
+        <p className="text-center text-gray-500 py-16 text-sm">No models in Ollama yet — train and merge a profile first.</p>
       ) : (
         <div className="space-y-2">
           {models.map(m => (
@@ -114,10 +114,10 @@ export default function ModelsPage({ profiles, onProfilesChange }: Props) {
                     </span>
                   )}
                   {!m.profile && (
-                    <span className="px-2 py-0.5 bg-gray-800 text-gray-600 rounded-full text-xs">unlinked</span>
+                    <span className="px-2 py-0.5 bg-gray-800 text-gray-500 rounded-full text-xs">unlinked</span>
                   )}
                 </div>
-                <p className="text-xs text-gray-600 mt-0.5">
+                <p className="text-xs text-gray-500 mt-0.5">
                   {fmtSize(m.size_bytes)}
                   {m.modified_at && (
                     <> · {new Date(m.modified_at).toLocaleDateString()}</>

@@ -4,6 +4,14 @@ import { API, saveServerConfig } from '../lib/server'
 
 const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
+async function winAction(action: 'minimize' | 'maximize' | 'close') {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const win = getCurrentWindow()
+  if (action === 'minimize') win.minimize()
+  else if (action === 'maximize') win.toggleMaximize()
+  else win.close()
+}
+
 type Step =
   | 'choose'
   | 'storage'
@@ -97,7 +105,7 @@ function ProgDots({ labels, current }: { labels: string[]; current: number }) {
         return (
           <div key={i} className="flex items-center">
             <div className={`flex items-center gap-1.5 text-[11px] font-mono transition-colors duration-200 ${
-              isActive ? 'text-indigo-300' : isDone ? 'text-emerald-400' : 'text-gray-600'
+              isActive ? 'text-indigo-300' : isDone ? 'text-emerald-400' : 'text-gray-500'
             }`}>
               <div
                 className={`w-7 h-7 rounded-full border flex items-center justify-center text-[11px] font-semibold flex-shrink-0 transition-all duration-300 ${
@@ -105,7 +113,7 @@ function ProgDots({ labels, current }: { labels: string[]; current: number }) {
                     ? 'border-indigo-500 bg-indigo-500 text-white'
                     : isDone
                       ? 'border-emerald-400 bg-emerald-400 text-gray-950'
-                      : 'border-gray-700 bg-gray-800 text-gray-600'
+                      : 'border-gray-700 bg-gray-800 text-gray-500'
                 }`}
                 style={isActive ? { boxShadow: '0 0 14px rgba(99,102,241,.45)' } : undefined}
               >
@@ -139,7 +147,7 @@ function ProgDots({ labels, current }: { labels: string[]; current: number }) {
 // ── Field helpers ─────────────────────────────────────────────────
 function WzLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] tracking-[2px] uppercase font-mono mb-1.5" style={{ color: '#4a5580' }}>
+    <div className="text-[10px] tracking-[2px] uppercase font-mono mb-1.5" style={{ color: '#7886b8' }}>
       {children}
     </div>
   )
@@ -155,11 +163,45 @@ function WzInput({ value, onChange, placeholder, type = 'text', onKeyDown }: {
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
       onKeyDown={onKeyDown}
-      className="flex-1 bg-gray-800 border font-mono text-sm text-gray-100 placeholder-gray-600 outline-none px-3.5 py-2.5 rounded-sm transition-colors"
+      className="flex-1 bg-gray-800 border font-mono text-sm text-gray-100 placeholder-gray-500 outline-none px-3.5 py-2.5 rounded-sm transition-colors"
       style={{ borderColor: '#1a2340' }}
       onFocus={e => (e.currentTarget.style.borderColor = 'rgba(99,102,241,.5)')}
       onBlur={e  => (e.currentTarget.style.borderColor = '#1a2340')}
     />
+  )
+}
+
+async function pickFolder(defaultPath?: string): Promise<string | null> {
+  if (!IS_TAURI) return null
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const result = await open({ directory: true, multiple: false, defaultPath: defaultPath || undefined })
+  return typeof result === 'string' ? result : null
+}
+
+function WzPathInput({ value, onChange, placeholder, label }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; label: string
+}) {
+  async function browse() {
+    const picked = await pickFolder(value)
+    if (picked) onChange(picked)
+  }
+  return (
+    <div className="flex gap-2">
+      <WzInput value={value} onChange={onChange} placeholder={placeholder} />
+      {IS_TAURI && (
+        <button
+          type="button"
+          onClick={browse}
+          title={`Browse for ${label}`}
+          className="flex-shrink-0 px-3.5 text-[12px] font-medium rounded-sm transition-all duration-150"
+          style={{ background: '#1a2442', border: '1px solid #1a2340', color: '#a5b4fc' }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = '#6366f1'; e.currentTarget.style.color = '#818cf8' }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#a5b4fc' }}
+        >
+          Browse…
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -204,7 +246,10 @@ export default function SetupWizard({ onComplete }: Props) {
         .catch(() => {})
     }
     if (step === 'model-select') {
-      fetch(`${API}/setup/models`).then(r => r.json()).then(setModels).catch(() => {})
+      fetch(`${API}/setup/models`)
+        .then(r => r.json())
+        .then(data => setModels(Array.isArray(data) ? data : []))
+        .catch(() => setModels([]))
       fetch(`${API}/health`).then(r => r.json()).then(h => {
         const match = String(h.gpu ?? '').match(/,\s*(\d+),/)
         if (match) setGpuVram(Math.round(parseInt(match[1]) / 1024))
@@ -320,10 +365,44 @@ export default function SetupWizard({ onComplete }: Props) {
   const selModel = models.find(m => m.key === selectedModel)
 
   return (
-    <div className="fixed inset-0 bg-gray-950">
+    <div className="fixed inset-0 bg-gray-950 flex flex-col">
       <StarField />
+
+      {/* Title bar — drag region with window controls */}
       <div
-        className="fixed inset-0 z-10 flex items-center justify-center"
+        data-tauri-drag-region
+        className="relative z-20 h-12 flex-shrink-0 flex items-center px-5 border-b border-gray-800 bg-gray-900"
+      >
+        <span className="text-[15px] font-bold tracking-tight pointer-events-none select-none">
+          <span className="text-gray-100">sk</span>
+          <span className="text-indigo-400" style={{ textShadow: '0 0 16px rgba(129,140,248,.5)' }}>AI</span>
+          <span className="text-gray-100">ler</span>
+        </span>
+        <span className="ml-4 text-[10px] tracking-[2px] uppercase font-mono select-none" style={{ color: '#7886b8' }}>
+          Setup
+        </span>
+
+        {IS_TAURI && (
+          <div className="ml-auto flex items-center h-full -mr-5">
+            {([
+              { action: 'minimize', label: '─', hover: 'hover:bg-gray-700' },
+              { action: 'maximize', label: '⊡', hover: 'hover:bg-gray-700' },
+              { action: 'close',    label: '✕', hover: 'hover:bg-red-600'  },
+            ] as const).map(({ action, label, hover }) => (
+              <button
+                key={action}
+                onClick={() => winAction(action)}
+                className={`w-12 h-full flex items-center justify-center text-gray-500 hover:text-gray-100 ${hover} transition-colors text-[13px]`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div
+        className="relative z-10 flex-1 min-h-0 flex items-center justify-center"
         style={{ padding: '24px' }}
       >
         {/* Card */}
@@ -331,7 +410,7 @@ export default function SetupWizard({ onComplete }: Props) {
           className="relative flex flex-col overflow-hidden w-full"
           style={{
             maxWidth: '860px',
-            height: 'calc(100vh - 48px)',
+            height: '100%',
             maxHeight: '720px',
             background: '#0f1628',
             border: '1px solid #1a2340',
@@ -360,10 +439,10 @@ export default function SetupWizard({ onComplete }: Props) {
               {step === 'choose' && (
                 <div>
                   <div className="text-center mb-7">
-                    <div className="text-[28px] font-bold tracking-tight mb-1">
+                    <div className="text-[28px] font-bold tracking-tight mb-1 text-gray-100">
                       sk<span style={{ color: '#818cf8' }}>AI</span>ler
                     </div>
-                    <div className="text-[12px] tracking-[3px] uppercase font-mono" style={{ color: '#4a5580' }}>
+                    <div className="text-[12px] tracking-[3px] uppercase font-mono" style={{ color: '#7886b8' }}>
                       Your AI. Your data. Your sky.
                     </div>
                   </div>
@@ -422,7 +501,7 @@ export default function SetupWizard({ onComplete }: Props) {
                       >
                         <div className="flex justify-center mb-3.5">{icon}</div>
                         <div className="text-base font-semibold mb-1.5">{title}</div>
-                        <div className="text-xs leading-relaxed" style={{ color: '#4a5580' }}>{desc}</div>
+                        <div className="text-xs leading-relaxed" style={{ color: '#7886b8' }}>{desc}</div>
                       </button>
                     ))}
                   </div>
@@ -440,7 +519,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     <div className="text-[22px] font-bold tracking-tight mb-1.5">
                       Where should skAIler <span style={{ color: '#818cf8' }}>store your data?</span>
                     </div>
-                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#4a5580' }}>
+                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#7886b8' }}>
                       Choose a location with enough disk space. Models alone can take 5–20 GB each.
                     </div>
 
@@ -452,7 +531,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     ] as const).map(({ label, val, set, ph }) => (
                       <div key={label} className="mb-4">
                         <WzLabel>{label}</WzLabel>
-                        <WzInput value={val} onChange={set as (v: string) => void} placeholder={ph} />
+                        <WzPathInput value={val} onChange={set as (v: string) => void} placeholder={ph} label={label} />
                       </div>
                     ))}
 
@@ -467,7 +546,7 @@ export default function SetupWizard({ onComplete }: Props) {
                       </div>
                       <div className="flex items-center gap-3 px-4 py-2.5 text-[12px]" style={{ borderTop: '1px solid #1a2340' }}>
                         <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#6366f1' }} />
-                        <span>Trained AI models <span style={{ color: '#4a5580' }}>(5–20 GB per model)</span></span>
+                        <span>Trained AI models <span style={{ color: '#7886b8' }}>(5–20 GB per model)</span></span>
                       </div>
                     </div>
 
@@ -484,7 +563,7 @@ export default function SetupWizard({ onComplete }: Props) {
 
                   <div className="pt-10 flex flex-col items-center gap-1.5">
                     <AstSvg pose="idle" size={80} />
-                    <div className="text-[10px] font-mono text-center" style={{ color: '#4a5580' }}>holding your data</div>
+                    <div className="text-[10px] font-mono text-center" style={{ color: '#7886b8' }}>holding your data</div>
                   </div>
                 </div>
               )}
@@ -496,7 +575,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     <div className="text-[22px] font-bold tracking-tight mb-1.5">
                       Choose your <span style={{ color: '#818cf8' }}>AI foundation</span>
                     </div>
-                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#4a5580' }}>
+                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#7886b8' }}>
                       skAIler fine-tunes on top of these base models. You can add more models later.
                       {gpuVram !== null && (
                         <> &nbsp;Detected VRAM: <span className="font-mono" style={{ color: '#e2e8f8' }}>{gpuVram} GB</span></>
@@ -546,7 +625,7 @@ export default function SetupWizard({ onComplete }: Props) {
                                     ? { background: 'rgba(99,102,241,.2)', color: '#a5b4fc' }
                                     : fits
                                       ? { background: 'rgba(52,211,153,.12)', color: '#34d399' }
-                                      : { background: 'rgba(74,85,128,.2)', color: '#4a5580' }
+                                      : { background: 'rgba(74,85,128,.2)', color: '#7886b8' }
                                 }
                               >
                                 {recommended ? 'Recommended' : fits ? 'Compatible' : `Needs ${m.vram_gb} GB VRAM`}
@@ -554,8 +633,8 @@ export default function SetupWizard({ onComplete }: Props) {
                             </div>
                             <div className="text-sm font-semibold mb-1">{m.name}</div>
                             <div className="flex gap-3.5 text-[10px] font-mono mt-2">
-                              <span><span style={{ color: '#4a5580' }}>Size </span><span style={{ color: '#a5b4fc' }}>{m.size_gb} GB</span></span>
-                              <span><span style={{ color: '#4a5580' }}>VRAM </span><span style={{ color: '#a5b4fc' }}>{m.vram_gb} GB</span></span>
+                              <span><span style={{ color: '#7886b8' }}>Size </span><span style={{ color: '#a5b4fc' }}>{m.size_gb} GB</span></span>
+                              <span><span style={{ color: '#7886b8' }}>VRAM </span><span style={{ color: '#a5b4fc' }}>{m.vram_gb} GB</span></span>
                             </div>
                           </button>
                         )
@@ -565,7 +644,7 @@ export default function SetupWizard({ onComplete }: Props) {
 
                   <div className="pt-9 flex flex-col items-center gap-2">
                     <AstSvg pose="pointing" size={80} />
-                    <div className="text-[10px] font-mono text-center" style={{ color: '#4a5580' }}>Phi-3 recommended</div>
+                    <div className="text-[10px] font-mono text-center" style={{ color: '#7886b8' }}>Phi-3 recommended</div>
                   </div>
                 </div>
               )}
@@ -577,7 +656,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     <div className="text-[22px] font-bold tracking-tight mb-1.5">
                       Downloading your <span style={{ color: '#818cf8' }}>AI model</span>
                     </div>
-                    <div className="text-[13px] mb-6" style={{ color: '#4a5580' }}>
+                    <div className="text-[13px] mb-6" style={{ color: '#7886b8' }}>
                       {selModel ? `${selModel.name} · ${selModel.size_gb} GB total` : 'Preparing download...'}
                     </div>
 
@@ -614,7 +693,7 @@ export default function SetupWizard({ onComplete }: Props) {
                       </div>
                     </div>
 
-                    <div className="font-mono text-[12px] mb-5" style={{ color: '#4a5580' }}>
+                    <div className="font-mono text-[12px] mb-5" style={{ color: '#7886b8' }}>
                       {dlStatusFromPct(downloadPct)}
                     </div>
 
@@ -640,7 +719,7 @@ export default function SetupWizard({ onComplete }: Props) {
 
                   <div className="flex flex-col items-center gap-1.5">
                     <AstSvg pose="excited" size={80} />
-                    <div className="text-[10px] font-mono text-center" style={{ color: '#4a5580' }}>Watching closely...</div>
+                    <div className="text-[10px] font-mono text-center" style={{ color: '#7886b8' }}>Watching closely...</div>
                   </div>
                 </div>
               )}
@@ -674,7 +753,7 @@ export default function SetupWizard({ onComplete }: Props) {
                   <div className="text-[22px] font-bold tracking-tight mb-1.5">
                     sk<span style={{ color: '#818cf8' }}>AI</span>ler is <span style={{ color: '#34d399' }}>ready</span>
                   </div>
-                  <div className="text-[13px] mb-6" style={{ color: '#4a5580' }}>
+                  <div className="text-[13px] mb-6" style={{ color: '#7886b8' }}>
                     Your local AI is configured and ready to train.
                   </div>
 
@@ -685,7 +764,7 @@ export default function SetupWizard({ onComplete }: Props) {
                       { k: 'Status',  v: 'Ready', green: true },
                     ].map(({ k, v, mono, green }) => (
                       <div key={k} className="p-3 text-left rounded-sm" style={{ background: '#141d35', border: '1px solid #1a2340' }}>
-                        <div className="text-[9px] tracking-[2px] uppercase font-mono mb-1" style={{ color: '#4a5580' }}>{k}</div>
+                        <div className="text-[9px] tracking-[2px] uppercase font-mono mb-1" style={{ color: '#7886b8' }}>{k}</div>
                         <div className={`text-[12px] font-medium truncate ${mono ? 'font-mono text-[11px]' : ''}`} style={green ? { color: '#34d399' } : undefined}>
                           {v}
                         </div>
@@ -694,7 +773,7 @@ export default function SetupWizard({ onComplete }: Props) {
                   </div>
 
                   <AstSvg pose="thumbsup" size={80} />
-                  <div className="text-[11px] font-mono mt-2.5" style={{ color: '#4a5580' }}>mission accomplished</div>
+                  <div className="text-[11px] font-mono mt-2.5" style={{ color: '#7886b8' }}>mission accomplished</div>
                 </div>
               )}
 
@@ -705,7 +784,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     <div className="text-[22px] font-bold tracking-tight mb-1.5">
                       Connect to a <span style={{ color: '#818cf8' }}>skAIler server</span>
                     </div>
-                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#4a5580' }}>
+                    <div className="text-[13px] leading-relaxed mb-6" style={{ color: '#7886b8' }}>
                       Enter the address of an existing skAIler installation on your network or the internet.
                     </div>
 
@@ -755,7 +834,7 @@ export default function SetupWizard({ onComplete }: Props) {
                     <div className="text-[22px] font-bold tracking-tight mb-1.5">
                       Connection <span style={{ color: '#818cf8' }}>confirmed</span>
                     </div>
-                    <div className="text-[13px] mb-6" style={{ color: '#4a5580' }}>
+                    <div className="text-[13px] mb-6" style={{ color: '#7886b8' }}>
                       Successfully reached the skAIler server. Ready to connect.
                     </div>
 
@@ -764,17 +843,17 @@ export default function SetupWizard({ onComplete }: Props) {
                       style={{ background: '#141d35', border: '1px solid #34d399' }}
                     >
                       <div className="flex justify-between px-5 py-2.5 text-[12px]">
-                        <span style={{ color: '#4a5580' }}>Server</span>
+                        <span style={{ color: '#7886b8' }}>Server</span>
                         <span className="font-mono truncate max-w-xs">{remoteUrl}</span>
                       </div>
                       {testResult?.info && (
                         <div className="flex justify-between px-5 py-2.5 text-[12px]" style={{ borderTop: '1px solid #1a2340' }}>
-                          <span style={{ color: '#4a5580' }}>Info</span>
+                          <span style={{ color: '#7886b8' }}>Info</span>
                           <span style={{ color: '#e2e8f8' }}>{testResult.info}</span>
                         </div>
                       )}
                       <div className="flex justify-between px-5 py-2.5 text-[12px]" style={{ borderTop: '1px solid #1a2340' }}>
-                        <span style={{ color: '#4a5580' }}>Status</span>
+                        <span style={{ color: '#7886b8' }}>Status</span>
                         <span style={{ color: '#34d399' }}>Reachable</span>
                       </div>
                     </div>
@@ -782,7 +861,7 @@ export default function SetupWizard({ onComplete }: Props) {
 
                   <div className="flex flex-col items-center gap-1.5">
                     <AstSvg pose="thumbsup" size={80} />
-                    <div className="text-[10px] font-mono text-center" style={{ color: '#4a5580' }}>ready to launch</div>
+                    <div className="text-[10px] font-mono text-center" style={{ color: '#7886b8' }}>ready to launch</div>
                   </div>
                 </div>
               )}
@@ -807,9 +886,9 @@ export default function SetupWizard({ onComplete }: Props) {
                     else if (step === 'remote-confirm') setStep('remote-url')
                   }}
                   className="text-[12px] font-semibold px-5 py-2 rounded-sm transition-all duration-150"
-                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#4a5580' }}
+                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#7886b8' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = '#a5b4fc'; e.currentTarget.style.color = '#e2e8f8' }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#4a5580' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#7886b8' }}
                 >
                   Back
                 </button>
@@ -822,9 +901,9 @@ export default function SetupWizard({ onComplete }: Props) {
                 <button
                   onClick={onComplete}
                   className="text-[12px] font-semibold px-5 py-2 rounded-sm transition-all duration-150"
-                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#4a5580' }}
+                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#7886b8' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = '#a5b4fc'; e.currentTarget.style.color = '#e2e8f8' }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#4a5580' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#7886b8' }}
                 >
                   Skip setup
                 </button>
@@ -868,9 +947,9 @@ export default function SetupWizard({ onComplete }: Props) {
                 <button
                   onClick={() => setStep('model-select')}
                   className="text-[12px] font-semibold px-5 py-2 rounded-sm transition-all duration-150"
-                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#4a5580' }}
+                  style={{ background: 'transparent', border: '1px solid #1a2340', color: '#7886b8' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = '#a5b4fc'; e.currentTarget.style.color = '#e2e8f8' }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#4a5580' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = '#1a2340'; e.currentTarget.style.color = '#7886b8' }}
                 >
                   Cancel
                 </button>

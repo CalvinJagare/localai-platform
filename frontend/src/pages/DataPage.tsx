@@ -363,7 +363,7 @@ export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) 
         </div>
       ) : (
         <>
-          <p className="text-xs text-gray-600 mb-3">
+          <p className="text-xs text-gray-500 mb-3">
             Deleting a file does not affect completed training jobs or their models.
           </p>
           <div className="space-y-2">
@@ -393,7 +393,7 @@ export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) 
                 <button
                   onClick={() => deleteGroup(g)}
                   title="Delete file copies — does not affect completed training jobs"
-                  className="text-gray-600 hover:text-red-400 transition-colors text-base shrink-0"
+                  className="text-gray-500 hover:text-red-400 transition-colors text-base shrink-0"
                 >
                   🗑
                 </button>
@@ -468,11 +468,11 @@ export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) 
                         <div className="flex items-center gap-2 flex-wrap mb-1">
                           <p className="font-medium text-gray-200">{ds.name}</p>
                           <span className="px-1.5 py-0.5 bg-gray-800 text-gray-400 text-xs rounded font-mono">{ds.format}</span>
-                          <span className="px-1.5 py-0.5 bg-gray-800/50 text-gray-600 text-xs rounded">{ds.license}</span>
+                          <span className="px-1.5 py-0.5 bg-gray-800/50 text-gray-500 text-xs rounded">{ds.license}</span>
                         </div>
                         <p className="text-xs text-gray-500 leading-relaxed">{ds.description}</p>
                         <p className="text-xs text-indigo-400/70 mt-1.5">Good for: {ds.goodFor}</p>
-                        <p className="text-xs text-gray-600 mt-1 flex items-center gap-2">
+                        <p className="text-xs text-gray-500 mt-1 flex items-center gap-2">
                           <span>{ds.examples} examples · {ds.size}</span>
                           {ds.large && (
                             <span className="px-1.5 py-0.5 bg-amber-900/40 text-amber-500 rounded text-xs font-medium">⚠ Large download</span>
@@ -502,20 +502,20 @@ export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) 
 
             {/* Custom URL */}
             <div className="mt-3 p-4 bg-gray-900 border border-gray-800 rounded-xl">
-              <p className="text-xs font-medium text-gray-400 mb-2">Custom URL <span className="text-gray-600 font-normal">— any JSONL or JSON array</span></p>
+              <p className="text-xs font-medium text-gray-400 mb-2">Custom URL <span className="text-gray-500 font-normal">— any JSONL or JSON array</span></p>
               <div className="space-y-2">
                 <input
                   value={customUrl}
                   onChange={e => setCustomUrl(e.target.value)}
                   placeholder="https://…"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
                 <div className="flex gap-2">
                   <input
                     value={customFilename}
                     onChange={e => setCustomFilename(e.target.value)}
                     placeholder="filename.jsonl (optional)"
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   <button
                     onClick={downloadCustom}
@@ -561,7 +561,7 @@ export default function DataPage({ onDataAdded }: { onDataAdded?: () => void }) 
               ) : (
                 preview.records.map((rec, i) => (
                   <div key={i} className="bg-gray-950 border border-gray-800 rounded-xl p-3">
-                    <p className="text-xs text-gray-600 mb-1.5">Example {i + 1}</p>
+                    <p className="text-xs text-gray-500 mb-1.5">Example {i + 1}</p>
                     <pre className="text-xs text-gray-300 whitespace-pre-wrap overflow-x-auto">
                       {JSON.stringify(rec, null, 2)}
                     </pre>

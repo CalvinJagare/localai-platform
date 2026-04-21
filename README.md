@@ -1,4 +1,4 @@
-# LocalAI Platform
+# skAIler
 
 Local AI platform for businesses. Train, manage and run AI models privately.
 
