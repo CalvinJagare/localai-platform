@@ -43,7 +43,8 @@ export default function ModelsPage({ profiles, onProfilesChange }: Props) {
     try {
       const resp = await fetch(`${API}/models`)
       if (!resp.ok) throw new Error(resp.statusText)
-      setModels(await resp.json())
+      const data = await resp.json()
+      setModels(Array.isArray(data) ? data : [])
     } catch (err) {
       setError(String(err))
     } finally {

@@ -1,18 +1,49 @@
 import StarField from './StarField'
 
+async function winAction(action: 'minimize' | 'close') {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const win = getCurrentWindow()
+  if (action === 'minimize') win.minimize()
+  else win.close()
+}
+
 interface Props {
   statusText: string
 }
 
 export default function SplashScreen({ statusText }: Props) {
   return (
-    <div
-      data-tauri-drag-region
-      className="fixed inset-0 bg-gray-950 select-none"
-    >
+    <div className="fixed inset-0 bg-gray-950 select-none flex flex-col">
       <StarField />
 
-      <div className="relative z-10 flex flex-col items-center justify-center h-full gap-0">
+      {/* Title bar — drag region, matches TopBar height/style */}
+      <div
+        data-tauri-drag-region
+        className="relative z-10 h-12 flex-shrink-0 flex items-center px-5 border-b border-gray-800 bg-gray-900"
+      >
+        <span className="text-[17px] font-bold tracking-tight pointer-events-none">
+          <span className="text-white">sk</span>
+          <span className="text-indigo-400" style={{ textShadow: '0 0 16px rgba(129,140,248,.5)' }}>AI</span>
+          <span className="text-white">ler</span>
+        </span>
+
+        <div className="ml-auto flex items-center h-full -mr-5">
+          {([
+            { action: 'minimize', label: '─', hover: 'hover:bg-gray-700' },
+            { action: 'close',    label: '✕', hover: 'hover:bg-red-600'  },
+          ] as const).map(({ action, label, hover }) => (
+            <button
+              key={action}
+              onClick={() => winAction(action)}
+              className={`w-12 h-full flex items-center justify-center text-gray-500 hover:text-gray-100 ${hover} transition-colors text-[13px]`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="relative z-10 flex flex-col items-center justify-center flex-1 gap-0">
         {/* Astronaut SVG */}
         <svg
           className="ast-float mb-8"
@@ -44,7 +75,7 @@ export default function SplashScreen({ statusText }: Props) {
 
         {/* Brand */}
         <div className="text-center mb-10">
-          <div className="text-[32px] font-bold tracking-tight leading-none mb-1">
+          <div className="text-[32px] font-bold tracking-tight leading-none mb-1 text-white">
             sk<span style={{ color: '#818cf8', textShadow: '0 0 18px rgba(129,132,248,.6)' }}>AI</span>ler
           </div>
           <div className="text-[11px] tracking-[3px] uppercase font-mono" style={{ color: '#4a5580' }}>

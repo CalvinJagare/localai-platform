@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Page } from '../App'
 
+const IS_TAURI = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+async function winAction(action: 'minimize' | 'maximize' | 'close') {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  const win = getCurrentWindow()
+  if (action === 'minimize') win.minimize()
+  else if (action === 'maximize') win.toggleMaximize()
+  else win.close()
+}
+
 const SECTION: Record<Page, string> = {
   chat:         'AI Communications',
   training:     'Training Hub',
@@ -33,7 +43,7 @@ export default function TopBar({ page }: Props) {
   }, [])
 
   return (
-    <div className="col-span-2 flex items-center bg-gray-900 border-b border-gray-700 z-20 h-12">
+    <div data-tauri-drag-region className="col-span-2 flex items-center bg-gray-900 border-b border-gray-700 z-20 h-12">
 
       {/* Brand — width matches sidebar */}
       {/* data-tauri-drag-region lets users drag the frameless window from here */}
@@ -88,6 +98,25 @@ export default function TopBar({ page }: Props) {
           />
           <span className="text-[11px] font-mono text-emerald-400">Nominal</span>
         </div>
+
+        {/* Window controls — Tauri only */}
+        {IS_TAURI && (
+          <div className="flex items-center h-full">
+            {([
+              { action: 'minimize', label: '─', hover: 'hover:bg-gray-700' },
+              { action: 'maximize', label: '⊡', hover: 'hover:bg-gray-700' },
+              { action: 'close',    label: '✕', hover: 'hover:bg-red-600'  },
+            ] as const).map(({ action, label, hover }) => (
+              <button
+                key={action}
+                onClick={() => winAction(action)}
+                className={`w-12 h-full flex items-center justify-center text-gray-500 hover:text-gray-100 ${hover} transition-colors text-[13px]`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
